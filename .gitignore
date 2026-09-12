@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+data/*.csv
+output/*.csv
+output/*.txt
+.ipynb_checkpoints/
+.DS_Store
+catboost_info/
