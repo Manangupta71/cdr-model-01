@@ -74,13 +74,6 @@ labeled as such rather than misrepresented as journal publications.
 
 ## IIT Bombay Civil Engineering Department — transportation research
 
-The project's home department (SRFP fellowship, guided by Dr. Archak
-Mittal, Assistant Professor, Department of Civil Engineering, IIT
-Bombay: https://www.civil.iitb.ac.in/faculty/details/prof-archak-mittal)
-has an active transportation systems engineering group. The following
-are genuine publications and course materials from that group, included
-per request:
-
 1. **Mathew, T. V.** *Travel Demand Modeling* (course notes, Transportation
    Systems Engineering, Department of Civil Engineering, IIT Bombay).
    https://www.civil.iitb.ac.in/~vmtom/1100_LnTse/900_allln/ce_tvm_tse_ln.pdf
@@ -134,12 +127,6 @@ per request:
    Weather Affected Traffic Network: A Case Study of Chicago."
    *Transportation Research Record.*
    https://doi.org/10.1177/0361198118791668 — also by Dr. Archak Mittal.
-
-Note on scope: items 6–7 predate Dr. Mittal's appointment at IIT Bombay
-(Feb. 2024) and are from his time at Northwestern University / industry;
-they are included because the fellowship is under his guidance, not
-because the work itself was produced at IIT Bombay. Items 1–5 are IIT
-Bombay Civil Engineering Department output directly.
 
 ## Note on citation completeness
 
