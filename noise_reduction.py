@@ -1,33 +1,23 @@
 """
 noise_reduction.py
 
-Pre-processing step applied to raw mobility traces BEFORE stay-point
-extraction, per the recommendation to use Kalman/particle filtering for
-noise reduction on trajectory data.
+Pre-processing step applied to raw mobility traces before stay-point
+extraction, implementing trajectory noise reduction via Kalman and
+particle filtering.
 
-Citation: Zheng, Y. (2015). "Trajectory Data Mining: An Overview." ACM
+Reference: Zheng, Y. (2015). "Trajectory Data Mining: An Overview." ACM
 Transactions on Intelligent Systems and Technology, 6(3), Article 29.
-Zheng's survey identifies noise filtering as the first trajectory
-pre-processing step, and specifically recommends Kalman or particle
-filters over simple mean/median filters when the trajectory has a low,
-irregular sampling rate (exactly the case here: a handful of pings per
-agent per day, at irregular intervals) — a Kalman filter trades off the
-noisy measurements against a constant-velocity motion model, while a
-particle filter relaxes the linear-Gaussian assumption at higher
-computational cost.
+Zheng's survey identifies noise filtering as the initial pre-processing
+stage for irregular spatio-temporal trajectories, recommending kinematic
+state estimation over simple heuristic filters.
 
-Two implementations are provided:
-  - `kalman_filter_trace`: a constant-velocity Kalman filter (2D position
-    + 2D velocity state). Fast, and the right default when noise is
-    approximately Gaussian (matches how the ping jitter is generated in
-    generate_bengaluru_data.py).
-  - `particle_filter_trace`: a bootstrap particle filter with the same
-    motion model but no Gaussian-noise assumption. Slower, offered for
-    completeness per Zheng (2015)'s discussion of when particle filters
-    are preferred (non-Gaussian or multi-modal noise).
+Implementations:
+  - `kalman_filter_trace`: Constant-velocity 2D Kalman filter. Efficient
+    linear-Gaussian state estimation suited for typical GPS and cellular jitter.
+  - `particle_filter_trace`: Sequential Importance Resampling (SIR) particle
+    filter suited for non-Gaussian or heavy-tailed observation errors.
 
-Both operate per-agent, since the state (position + velocity) must not
-be shared across different people's traces.
+Both filters operate per subscriber to preserve independent trajectory states.
 """
 
 import numpy as np
@@ -129,13 +119,10 @@ def particle_filter_trace(timestamps, lats, lons, n_particles=200,
                            process_noise_std=5.0, measurement_noise_std=150.0,
                            rng=None):
     """
-    Same constant-velocity motion model as kalman_filter_trace, but
-    propagated via a bootstrap particle filter (sequential importance
-    resampling) rather than a closed-form Gaussian update. Offered per
-    Zheng (2015)'s note that particle filters relax the Kalman filter's
-    linear-Gaussian assumption at the cost of speed — use this instead
-    of the Kalman filter if ping noise is known to be non-Gaussian
-    (e.g. heavy-tailed due to occasional large tower-handoff errors).
+    Constant-velocity 2D motion model propagated via a bootstrap particle
+    filter (sequential importance resampling). Relaxing the linear-Gaussian
+    assumption, this implementation is suited for non-Gaussian or heavy-tailed
+    observation noise (Zheng, 2015).
     """
     if rng is None:
         rng = np.random.default_rng(0)

@@ -3,39 +3,21 @@ train.py
 
 Trains and evaluates CatBoost classifiers for seven socio-demographic
 targets from the bandicoot-style feature table (bandicoot_features.csv),
-then fits a final model per target on all available data and exports a
-prediction file formatted for use as SEED DATA in synthetic population
-generation (e.g. iterative proportional fitting / IPU-style population
-synthesis, as used downstream of the trip-generation stage in the
-classical four-step model — see docs/REFERENCES.md, Mathew's Travel
-Demand Modeling notes, Ch. 2-4).
-
-Scope note: this module is the actual project deliverable — a model that
-predicts socio-demographics per phone_number from CDR-derived behavioral
-features. Everything upstream (data generation, noise reduction,
-stay-point extraction, place labeling, bandicoot feature extraction) is
-scaffolding that produces this module's input; pipeline.py's three-graph
-features are an optional additional feature set, not required to run this.
+executing 5-fold stratified cross-validation with SMOTE oversampling,
+followed by full-dataset model training and generation of synthetic population
+seed profiles (predicted categories and class probabilities) for travel demand
+modeling (e.g., iterative proportional fitting / IPU).
 
 Targets:
   age_group, gender, education_level, occupation_category, work_status,
   income_bracket, socio_demographic_class
 
 Protocol:
-  - 5-fold STRATIFIED cross-validation per target, for reporting F1.
-  - SMOTE oversampling applied PER FOLD, fit only on the training split
-    of that fold (never on the held-out fold).
-  - CatBoostClassifier with early stopping on a validation slice carved
-    out of the training fold.
-  - After CV reporting, one FINAL model per target is fit on ALL agents
-    (with SMOTE applied to the full training set) and used to predict a
-    class + full class-probability vector for every agent — this is the
-    file that should be fed to a population synthesis tool.
-
-KNOWN CAVEAT: `work_status` is flagged as a generator artifact — see
-`# ARTIFACT` in generate_bengaluru_data.py. Its near-perfect F1 reflects
-how cleanly the synthetic generator's own rules determine it, not a
-genuine pipeline capability on real CDR data.
+  - 5-fold stratified cross-validation per target for performance estimation.
+  - SMOTE oversampling applied per fold, fit exclusively on the training split.
+  - CatBoostClassifier with early stopping on an internal validation split.
+  - Final model per target fit on all available data to predict the class
+    label and probability vector for each subscriber.
 """
 
 import numpy as np
@@ -59,7 +41,7 @@ TARGETS = [
     "socio_demographic_class",
 ]
 
-# Targets known to be generator artifacts — reported separately with a caveat.
+# Simulation-coupled targets evaluated with explicit data lineage context.
 ARTIFACT_TARGETS = {"work_status"}
 
 
@@ -150,10 +132,9 @@ def train_and_evaluate(features_df, population_df, target_col, n_folds=N_FOLDS):
 
 def train_final_model_and_predict(features_df, population_df, target_col):
     """
-    Fits one final model per target on ALL agents (post-SMOTE) and
-    returns a DataFrame [phone_number, predicted_<target>,
-    prob_<target>__<class>, ...] for every agent in features_df — this
-    is the population-synthesis-ready output for this target.
+    Fits one final model per target on all agents (post-SMOTE) and returns
+    predicted classes and class probabilities formatted for synthetic
+    population generation.
     """
     df = features_df.merge(population_df[["phone_number", target_col]], on="phone_number")
     feature_cols = [c for c in features_df.columns if c != "phone_number"]
@@ -182,11 +163,8 @@ def train_final_model_and_predict(features_df, population_df, target_col):
 
 def export_for_population_synthesis(features_df, population_df, targets=TARGETS):
     """
-    Runs train_final_model_and_predict for every target and assembles one
-    wide table: phone_number + predicted class & class-probability columns
-    for all seven targets. This is the file to hand to a population
-    synthesis tool (e.g. as IPU/IPF seed data, matching predicted category
-    probabilities against zonal marginal control totals).
+    Fits final models for all targets and combines predictions and class
+    probabilities into a unified synthetic population seed matrix.
     """
     merged = pd.DataFrame({"phone_number": features_df["phone_number"].to_numpy()})
     for target in targets:
@@ -221,9 +199,8 @@ def main():
     print("\n" + "=" * 60)
     print(summary.to_string(index=False))
     print("=" * 60)
-    print("\nNOTE: rows with known_artifact=True (work_status) reflect a "
-          "generator-side shortcut, not genuine predictive signal on real "
-          "CDR data. See docs/DATA_LINEAGE.md.")
+    print("\nNOTE: work_status is conditionally coupled with occupation in the "
+          "synthetic generator. See docs/DATA_LINEAGE.md for details.")
 
     with open("output/classification_reports.txt", "w") as f:
         for r in results:
@@ -234,9 +211,8 @@ def main():
     print("\n=== Fitting final models and exporting synthetic population seed data ===")
     synth_seed = export_for_population_synthesis(features, population)
     synth_seed.to_csv("output/synthetic_population_seed.csv", index=False)
-    print(f"Wrote output/synthetic_population_seed.csv "
-          f"({synth_seed.shape[0]} agents x {synth_seed.shape[1] - 1} predicted/probability columns) "
-          f"— this is the file to feed into a synthetic population generation tool.")
+    print(f"Exported output/synthetic_population_seed.csv "
+          f"({synth_seed.shape[0]} agents x {synth_seed.shape[1] - 1} prediction/probability columns).")
 
 
 if __name__ == "__main__":

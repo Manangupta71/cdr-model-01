@@ -1,52 +1,37 @@
 """
 stay_points.py
 
-Implements the stay-point detection algorithm exactly as specified in:
+Implements the stay-point detection algorithm specified in:
 
   Toole, J. L., Colak, S., Sturt, B., Alexander, L. P., Evsukoff, A., &
   González, M. C. (2015). "The path most traveled: Travel demand
   estimation using big data resources." Transportation Research Part C:
-  Emerging Technologies, 58, 162-177. (Algorithms 2-5, adapted from
-  Zheng & Xie's stay-point algorithm.)
+  Emerging Technologies, 58, 162-177. (Algorithms 2-5).
 
-This is a deliberate correction from an earlier draft of this module,
-which paraphrased a generic distance/time-threshold stay-point algorithm
-attributed loosely to "Li et al. 2008." The actual base paper supplied
-for this project specifies a four-step procedure, reproduced faithfully
-here:
+Four-step procedure:
 
-  Step 1 (Initialize): per agent, a time-ordered list of pings, a
-    distance threshold delta (meters) between consecutive pings, a time
-    threshold tau (seconds) for a candidate set to count as a stay, and
-    a grid size ds (meters) for the agglomerative clustering pass.
+  Step 1 (Initialize): Per-subscriber time-ordered pings, distance
+    threshold delta (meters) between consecutive pings, temporal
+    threshold tau (seconds) for candidate stay qualification, and
+    spatial grid size ds (meters) for agglomerative clustering.
 
-  Step 2 (Candidate Stays): scan consecutive pings; while each next ping
-    is within delta of the previous ping IN THE CANDIDATE SET, keep
-    growing the candidate set. When a ping breaks the chain, check
-    whether the time span of the just-closed candidate set exceeds tau;
-    if so, it's a candidate stay (recorded as the centroid of the set).
-    Start a new candidate set at the breaking ping.
+  Step 2 (Candidate Stays): Sequential ping scan. Consecutive pings within
+    delta are grouped into candidate sets. When distance exceeds delta,
+    the time duration is evaluated against tau. If duration >= tau,
+    a candidate stay is recorded at the set's spatial centroid.
 
-  Step 3 (Agglomerative Clustering): candidate stays from different
-    times of day/different days that are actually the same physical
-    place (but drifted slightly due to ping noise) are merged: lay a
-    uniform grid of cell size ds over all of an agent's candidate stays,
-    and collapse every candidate stay in the same grid cell to one
-    stay point (the centroid of that cell's candidate stays).
+  Step 3 (Agglomerative Clustering): Spatial grid snapping (cell size ds)
+    merges recurring candidate stays across different times/days into
+    unified stay points.
 
-  Step 4 (Final Pass): sweep back over every ping not already part of a
-    stay and, if it falls within delta of an established stay's
-    location, snap it into that stay too (recovering isolated pings
-    that were too sparse to seed their own candidate set).
+  Step 4 (Final Pass): Sweeps unassigned pings and associates them with
+    the nearest stay centroid within delta distance.
 
-Defaults: delta=200m, tau=1200s (20 min), ds=200m, matching common
-practice in this literature and consistent with the tower-level spatial
-resolution described in Toole et al. (2015), Section 3.1.
+Defaults: delta=200m, tau=1200s (20 min), ds=200m, consistent with
+cellular tower spatial resolution in Toole et al. (2015), Section 3.1.
 
-Run noise_reduction.py on the raw mobility trace BEFORE this step —
-this algorithm assumes ping noise has already been Kalman/particle-filtered
-down to roughly tower-level accuracy; skipping that step will fragment
-stays under noisier traces.
+Execution Note: Prior noise reduction via `noise_reduction.py` is
+recommended to prevent telemetry jitter from fragmenting stay points.
 """
 
 import numpy as np

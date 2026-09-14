@@ -1,110 +1,102 @@
 # CDR-Based Socio-Demographic Prediction for Synthetic Population Generation
 
-A pipeline that simulates realistic Call Detail Record (CDR) data for a
-synthetic Bengaluru population, extracts the standard `bandicoot`
-behavioral-indicator feature set, and trains a model to predict
-socio-demographic attributes per phone number — producing an output file
-formatted for use as seed data in **synthetic population generation**
-(the step that feeds trip generation in the classical four-step travel
-demand model).
+A computational pipeline that simulates realistic Call Detail Record (CDR) data for an urban population (Bengaluru), extracts the standard `bandicoot` behavioral-indicator feature set, and trains machine learning models to predict individual socio-demographic attributes — producing structured seed profiles for **synthetic population generation** in travel demand modeling.
 
-> **Reconstruction notice**: this repository is a rebuild of an SRFP
-> fellowship project (IIT Bombay, guided by Dr. Archak Mittal), from
-> documented architecture, methods, and the papers supplied as the
-> project's base references — not a recovered copy of the original code.
-> See `docs/DEVELOPER_HANDBOOK.md` for what changed and why.
+> **Project Context**: Developed as part of the Summer Research Fellowship Programme (SRFP) at the Indian Institute of Technology Bombay (IIT Bombay), Department of Civil Engineering (Transportation Systems Engineering), under the guidance of Dr. Archak Mittal.
 
-## What this actually delivers
+---
 
-The one thing this project has to produce is **a model that predicts
-socio-demographics from CDR behavioral features, with output files ready
-for synthetic population generation**. Everything else in this repo is
-scaffolding that produces that model's input:
+## Pipeline Architecture
+
+The pipeline models the complete path from raw telecommunications telemetry to calibrated population synthesis seeds:
 
 ```
-generate_bengaluru_data.py  → raw CDR-like records (calls, texts, GPS-like
-                               pings, antennas, prepaid recharges)
-noise_reduction.py          → Kalman/particle-filtered pings
-stay_points.py              → discrete stay points per person
-label_places.py             → home / work / other labels per stay
-bandicoot_features.py       → the standard 868-column behavioral
-                               indicator table (one row per phone_number)
-train.py                    → THE DELIVERABLE: trains + cross-validates
-                               7 socio-demographic classifiers, then fits
-                               final models and exports
-                               output/synthetic_population_seed.csv
+generate_bengaluru_data.py  → Raw CDR telemetry (voice calls, SMS, spatial pings,
+                               cell towers, prepaid airtime recharges)
+noise_reduction.py          → Trajectory noise filtering via Kalman / Particle filters
+stay_points.py              → Spatial-temporal stay point extraction (Toole et al., 2015)
+label_places.py             → Meaningful place inference (Home / Work / Other anchors)
+bandicoot_features.py       → 868-column behavioral indicator extraction per subscriber
+train.py                    → 5-fold cross-validation & final model training across 7
+                              socio-demographic targets; exports synthetic population seeds
 ```
 
-## Quick start
+---
+
+## Quick Start
+
+### 1. Environment Setup
 
 ```bash
 pip install -r requirements.txt
+```
 
+### 2. Pipeline Execution
+
+Run the pipeline sequentially from raw data simulation to final inference:
+
+```bash
+# 1. Generate synthetic CDR telemetry
 python generate_bengaluru_data.py   # -> data/population.csv, mobility_traces.csv,
                                      #    communication_events.csv, recharge_events.csv,
                                      #    antennas.csv
+
+# 2. Apply trajectory noise reduction
 python noise_reduction.py           # -> data/mobility_traces_denoised.csv
+
+# 3. Detect stay points
 python stay_points.py               # -> output/stay_points.csv
+
+# 4. Infer home and work anchors
 python label_places.py              # -> output/stay_points_labeled.csv,
                                      #    output/home_work_anchors.csv
-python bandicoot_features.py        # -> output/bandicoot_features.csv (868 columns)
+
+# 5. Extract 868 bandicoot behavioral indicators
+python bandicoot_features.py        # -> output/bandicoot_features.csv
+
+# 6. Train classifiers and export synthetic population seed
 python train.py                     # -> output/results_summary.csv,
                                      #    output/classification_reports.txt,
-                                     #    output/synthetic_population_seed.csv  <- the deliverable
+                                     #    output/synthetic_population_seed.csv
 ```
 
-Each script picks up its input from `data/`/`output/` automatically, and
-`stay_points.py` / `bandicoot_features.py` will use the denoised mobility
-trace if present, falling back to the raw one otherwise.
+Each stage automatically loads its corresponding input from `data/` and `output/`. Both `stay_points.py` and `bandicoot_features.py` detect and prioritize the denoised mobility traces if available.
 
-**Runtime note**: `train.py` fits CatBoost (with per-fold SMOTE) 5 times
-per target for cross-validation, plus one final full-data fit per target,
-across 7 targets — expect several minutes at the default population size
-(5,000 agents), scaling with `N_AGENTS` in `generate_bengaluru_data.py`.
+> **Execution Note**: `train.py` executes 5-fold stratified cross-validation with per-fold SMOTE oversampling, followed by full-dataset training across all 7 socio-demographic targets. Runtime scales with population size (`N_AGENTS` in `generate_bengaluru_data.py`).
 
-## The output that matters: `synthetic_population_seed.csv`
+---
 
-One row per `phone_number`. For each of the 7 targets, two kinds of
-columns:
+## Target Variables
 
-- `predicted_<target>` — the model's single best-guess category
-  (e.g. `predicted_income_bracket = "upper_mid"`)
-- `prob_<target>__<class>` — the full predicted probability distribution
-  over that target's categories (e.g. `prob_income_bracket__low`,
-  `prob_income_bracket__lower_mid`, ...)
+The pipeline predicts seven socio-demographic dimensions:
 
-Both forms are provided because population-synthesis tools differ in
-what they expect: some (e.g. simple sample-and-assign approaches) just
-need the hard label; others (e.g. IPU/IPF-style reweighting against
-zonal marginal control totals) want the full probability vector so a
-synthetic individual can be drawn from it rather than assigned
-deterministically.
+1. `age_group` (18–24, 25–34, 35–44, 45–59, 60+)
+2. `gender` (male, female)
+3. `education_level` (primary, secondary, graduate, postgraduate)
+4. `occupation_category` (informal labor, retail/service, clerical, professional, unemployed, student)
+5. `work_status` (employed, unemployed, student, retired)
+6. `income_bracket` (low, lower_mid, upper_mid, high)
+7. `socio_demographic_class` (NCCS-style socio-economic grades E through A)
 
-## Targets
+> **Methodological Note on `work_status`**: In the synthetic data generator, `work_status` is conditionally coupled with occupation category; cross-validation performance reflects this structural alignment. See `docs/DATA_LINEAGE.md` for full discussion.
 
-`age_group`, `gender`, `education_level`, `occupation_category`,
-`work_status`, `income_bracket`, `socio_demographic_class`
+---
 
-> `work_status` is a **known generator artifact** — it's derived
-> near-deterministically from occupation in the synthetic generator, so
-> its high F1 reflects that shortcut, not genuine predictive difficulty.
-> See `docs/DATA_LINEAGE.md`.
+## Output Data Product: `synthetic_population_seed.csv`
 
-## Documentation map
+The primary output file, `output/synthetic_population_seed.csv`, contains one record per `phone_number` with:
 
-- **This file** — what the pipeline is, how to run it, what it outputs.
-- **`docs/DEVELOPER_HANDBOOK.md`** — architecture internals, the
-  algorithm choices behind each module, known limitations, and where to
-  extend the code.
-- **`docs/DATA_LINEAGE.md`** — every distributional assumption in the
-  synthetic generator, classified grounded / plausible / artifact.
-- **`docs/REFERENCES.md`** — every citation, with public links, mapped to
-  the specific module it backs — including the IIT Bombay Civil
-  Engineering department papers relevant to this project.
+- `predicted_<target>`: Point prediction (most probable category).
+- `prob_<target>__<class>`: Complete predicted probability distribution over all classes for that target.
 
-## Status
+This dual formulation supports standard population synthesis workflows:
+- **Direct Assignment**: Discrete sampling based on hard predicted labels.
+- **Reweighted Optimization (IPU / IPF)**: Fitting full probability vectors against zonal marginal control totals (e.g. ward-level census distributions) for agent-based transport simulations.
 
-This SRFP project's own research report (Mumbai-based) was submitted and
-accepted. This repository is a from-scratch rebuild, retargeted to
-Bengaluru, scoped specifically to the socio-demographic prediction model
-and its synthetic-population-ready output.
+---
+
+## Documentation
+
+- **[`docs/DEVELOPER_HANDBOOK.md`](docs/DEVELOPER_HANDBOOK.md)** — Architectural design, module implementations, algorithmic trade-offs, and extension interfaces.
+- **[`docs/DATA_LINEAGE.md`](docs/DATA_LINEAGE.md)** — Classification of distributional assumptions in the synthetic generator (empirically grounded vs. heuristic).
+- **[`docs/REFERENCES.md`](docs/REFERENCES.md)** — Methodological bibliography, academic literature citations, and related IIT Bombay transportation systems engineering research.

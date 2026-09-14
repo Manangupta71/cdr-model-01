@@ -16,12 +16,9 @@ home/work detection rule specified in:
     if user visits work less than once per week: user.work = null
     every stay is then labeled home, work, or other
 
-NOTE: this home/work boundary (20:00-07:00 vs 07:00-20:00, weekdays
-only) is a DIFFERENT convention from the day/night split used in
-bandicoot_features.py (07:00-19:00, applied across all days including
-weekends) — the two serve different purposes (place labeling vs. the
-standard bandicoot indicator time-of-day granularity) and are kept
-deliberately distinct rather than forced to share one boundary.
+Note: The home/work diurnal window (20:00-07:00 vs 07:00-20:00 weekdays)
+follows origin-destination modeling conventions (Toole et al., 2015), distinct
+from bandicoot's standard 07:00-19:00 indicator split.
 
 Stay points are first grouped into physical "places" (a place may be
 visited across many different stay-point instances on different days)

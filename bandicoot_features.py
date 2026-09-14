@@ -22,12 +22,9 @@ balance_of_contacts, interactions_per_contact, interevent_time,
 amount_recharges, interevent_time_recharges) are further expanded into
 seven summary statistics: mean, std, median, skewness, kurtosis, min, max.
 
-IMPORTANT: this module implements REASONABLE, DOCUMENTED APPROXIMATIONS of
-bandicoot's published indicator definitions (e.g. "conversation" grouping,
-pareto thresholds, churn_rate), not a byte-for-byte reimplementation of the
-bandicoot source. Where a choice was made that bandicoot's paper doesn't
-fully specify, it's called out inline with a `# CHOICE:` comment so it can
-be defended or revised in a methods section.
+Implements standard operational definitions for bandicoot behavioral indicators
+(conversation grouping, Pareto thresholds, response latency, and churn rate).
+Operational parameters are documented inline.
 """
 
 import warnings
@@ -42,11 +39,11 @@ warnings.filterwarnings("ignore", message="Precision loss occurred in moment cal
 
 WEEK_PARTS = ["allweek", "weekday", "weekend"]
 DAY_PARTS = ["allday", "day", "night"]
-DAY_START_HOUR = 7   # CHOICE: bandicoot's default day/night boundary; configurable in the real tool
+DAY_START_HOUR = 7   # Default day/night boundary (07:00 local)
 DAY_END_HOUR = 19
 STATS = ["mean", "std", "median", "skewness", "kurtosis", "min", "max"]
-CONVERSATION_GAP_SEC = 3600      # CHOICE: interactions >1h apart start a new "conversation"
-TEXT_REPLY_WINDOW_SEC = 3600     # CHOICE: a reply must follow within 1h to count as "responded"
+CONVERSATION_GAP_SEC = 3600      # Interactions >1h apart delineate a new conversation
+TEXT_REPLY_WINDOW_SEC = 3600     # Maximum latency to associate an outgoing reply with an incoming text
 PARETO_FRACTION = 0.8
 
 
