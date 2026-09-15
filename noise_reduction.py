@@ -180,17 +180,89 @@ def particle_filter_trace(timestamps, lats, lons, n_particles=200,
 
 
 # ---------------------------------------------------------------------------
+# Ping-Pong Handover Oscillation Filter
+# Reference: Jiang et al. (2017), IEEE Trans. Intell. Transp. Syst., 18(4), 779-796.
+#            https://doi.org/10.1109/TITS.2016.2572716
+#            Caceres et al. (2012), IET Intell. Transp. Syst., 6(1), 92-104.
+#            https://doi.org/10.1049/iet-its.2010.0154
+# ---------------------------------------------------------------------------
+
+def filter_ping_pong_handovers(mobility_df, max_ping_pong_time_sec=300.0, max_oscillation_dist_m=800.0):
+    """
+    Suppresses cellular ping-pong handover oscillations where consecutive pings
+    bounce rapidly between adjacent cellular towers (A -> B -> A) due to RF
+    shadowing or signal boundary fluctuations rather than actual travel.
+
+    Reference: Jiang et al. (2017), IEEE T-ITS; Caceres et al. (2012), IET-ITS.
+
+    Parameters:
+        mobility_df: DataFrame [agent_id, timestamp, lat, lon]
+        max_ping_pong_time_sec: Max round-trip time between ping i and i+2 to classify as ping-pong.
+        max_oscillation_dist_m: Max spatial separation between tower centroids.
+
+    Returns:
+        Filtered DataFrame with ping-pong intermediate bounces smoothed to local centroid.
+    """
+    if len(mobility_df) < 3:
+        return mobility_df.copy()
+
+    df = mobility_df.sort_values(["agent_id", "timestamp"]).copy()
+    cleaned_rows = []
+
+    for agent_id, grp in df.groupby("agent_id"):
+        grp = grp.reset_index(drop=True)
+        n = len(grp)
+        if n < 3:
+            cleaned_rows.append(grp)
+            continue
+
+        lats = grp["lat"].to_numpy().copy()
+        lons = grp["lon"].to_numpy().copy()
+        ts = pd.to_datetime(grp["timestamp"]).astype("int64").to_numpy() / 1e9
+
+        for i in range(n - 2):
+            dt_total = ts[i + 2] - ts[i]
+            if dt_total <= max_ping_pong_time_sec:
+                ref_lat = lats[i]
+                y1, x1 = _deg_to_m(lats[i], lons[i], ref_lat)
+                y2, x2 = _deg_to_m(lats[i + 1], lons[i + 1], ref_lat)
+                y3, x3 = _deg_to_m(lats[i + 2], lons[i + 2], ref_lat)
+
+                d12 = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+                d23 = np.sqrt((x3 - x2) ** 2 + (y3 - y2) ** 2)
+                d13 = np.sqrt((x3 - x1) ** 2 + (y3 - y1) ** 2)
+
+                # A -> B -> A pattern: distance(A, C) is much smaller than distance(A, B) and distance(B, C)
+                if (d12 > 100.0 or d23 > 100.0) and d13 <= max_oscillation_dist_m and d13 < min(d12, d23):
+                    # Intermediate ping i+1 is an oscillation; smooth it to centroid of i and i+2
+                    smoothed_y = (y1 + y3) / 2.0
+                    smoothed_x = (x1 + x3) / 2.0
+                    lats[i + 1], lons[i + 1] = _m_to_deg(smoothed_y, smoothed_x, ref_lat)
+
+        grp["lat"] = lats
+        grp["lon"] = lons
+        cleaned_rows.append(grp)
+
+    return pd.concat(cleaned_rows, ignore_index=True)
+
+
+# ---------------------------------------------------------------------------
 # Population-level driver
 # ---------------------------------------------------------------------------
 
-def denoise_mobility_traces(mobility_df, method="kalman", **kwargs):
+def denoise_mobility_traces(mobility_df, method="kalman", apply_ping_pong_filter=True, **kwargs):
     """
     mobility_df: DataFrame [agent_id, timestamp, lat, lon] (+ optionally antenna_id,
                  which is dropped and should be recomputed after denoising).
     method: 'kalman' (default, fast) or 'particle' (slower, non-Gaussian-robust).
+    apply_ping_pong_filter: Whether to first apply ping-pong handover oscillation suppression
+                            (Jiang et al., 2017, IEEE T-ITS).
     Returns a new DataFrame with the same columns, lat/lon replaced by
     filtered estimates, sorted by [agent_id, timestamp].
     """
+    if apply_ping_pong_filter:
+        mobility_df = filter_ping_pong_handovers(mobility_df)
+
     filt_fn = kalman_filter_trace if method == "kalman" else particle_filter_trace
     mobility_df = mobility_df.sort_values(["agent_id", "timestamp"]).reset_index(drop=True)
 
@@ -216,9 +288,10 @@ if __name__ == "__main__":
     mobility = pd.read_csv("data/mobility_traces.csv", parse_dates=["timestamp"])
     antennas = pd.read_csv("data/antennas.csv")
 
-    print(f"Denoising {len(mobility)} raw pings across {mobility['agent_id'].nunique()} agents "
-          f"with a constant-velocity Kalman filter (Zheng, 2015, ACM TIST)...")
-    denoised = denoise_mobility_traces(mobility, method="kalman")
+    print(f"Denoising {len(mobility)} raw pings across {mobility['agent_id'].nunique()} agents:")
+    print("  1. Applying Ping-Pong Handover Oscillation Filter (Jiang et al., 2017, IEEE T-ITS)...")
+    print("  2. Applying Constant-Velocity 2D Kalman Filter (Zheng, 2015, ACM TIST)...")
+    denoised = denoise_mobility_traces(mobility, method="kalman", apply_ping_pong_filter=True)
 
     print("Reassigning antenna IDs on the denoised coordinates...")
     denoised["antenna_id"] = gen.assign_antennas(denoised, antennas)

@@ -8,17 +8,21 @@ A computational pipeline that simulates realistic Call Detail Record (CDR) data 
 
 ## Pipeline Architecture
 
-The pipeline models the complete path from raw telecommunications telemetry to calibrated population synthesis seeds:
+The pipeline models the complete path from raw telecommunications telemetry to calibrated population synthesis seeds and expanded synthetic agents:
 
 ```
 generate_bengaluru_data.py  → Raw CDR telemetry (voice calls, SMS, spatial pings,
-                               cell towers, prepaid airtime recharges)
-noise_reduction.py          → Trajectory noise filtering via Kalman / Particle filters
+                              cell towers, prepaid airtime recharges)
+noise_reduction.py          → Trajectory noise filtering via Ping-Pong Handover suppression
+                              (Jiang et al., 2017) and kinematic Kalman / Particle filters
 stay_points.py              → Spatial-temporal stay point extraction (Toole et al., 2015)
 label_places.py             → Meaningful place inference (Home / Work / Other anchors)
-bandicoot_features.py       → 868-column behavioral indicator extraction per subscriber
-train.py                    → 5-fold cross-validation & final model training across 7
-                              socio-demographic targets; exports synthetic population seeds
+bandicoot_features.py       → Behavioral indicator extraction consuming inferred anchors
+                              (Alexander et al., 2015; de Montjoye et al., 2016)
+train.py                    → 5-fold CV & CatBoost with Platt probability calibration
+                              (Niculescu-Mizil & Caruana, 2005; He & Garcia, 2009)
+ipu.py                      → Downstream Iterative Proportional Updating (IPU) expanding
+                              seed profiles to zonal census totals (Ye et al., 2009; Sun & Erath, 2015)
 ```
 
 ---
@@ -33,36 +37,40 @@ pip install -r requirements.txt
 
 ### 2. Pipeline Execution
 
-Run the pipeline sequentially from raw data simulation to final inference:
+Run the pipeline sequentially from raw data simulation to final expanded population synthesis:
 
 ```bash
-# 1. Generate synthetic CDR telemetry
-python generate_bengaluru_data.py   # -> data/population.csv, mobility_traces.csv,
-                                     #    communication_events.csv, recharge_events.csv,
-                                     #    antennas.csv
+# 1. Generate synthetic CDR telemetry (default n=500, configurable)
+python generate_bengaluru_data.py --n_agents 500  # -> data/population.csv, mobility_traces.csv,
+                                                   #    communication_events.csv, recharge_events.csv,
+                                                   #    antennas.csv
 
-# 2. Apply trajectory noise reduction
-python noise_reduction.py           # -> data/mobility_traces_denoised.csv
+# 2. Apply trajectory noise reduction & ping-pong handover suppression
+python noise_reduction.py                         # -> data/mobility_traces_denoised.csv
 
 # 3. Detect stay points
-python stay_points.py               # -> output/stay_points.csv
+python stay_points.py                             # -> output/stay_points.csv
 
 # 4. Infer home and work anchors
-python label_places.py              # -> output/stay_points_labeled.csv,
-                                     #    output/home_work_anchors.csv
+python label_places.py                            # -> output/stay_points_labeled.csv,
+                                                   #    output/home_work_anchors.csv
 
-# 5. Extract 868 bandicoot behavioral indicators
-python bandicoot_features.py        # -> output/bandicoot_features.csv
+# 5. Extract behavioral indicators & commute features (using inferred anchors)
+python bandicoot_features.py                      # -> output/bandicoot_features.csv
 
-# 6. Train classifiers and export synthetic population seed
-python train.py                     # -> output/results_summary.csv,
-                                     #    output/classification_reports.txt,
-                                     #    output/synthetic_population_seed.csv
+# 6. Train calibrated classifiers and export synthetic population seed
+python train.py                                   # -> output/results_summary.csv,
+                                                   #    output/classification_reports.txt,
+                                                   #    output/synthetic_population_seed.csv
+
+# 7. Expand population seeds to zonal census marginal controls via IPU
+python ipu.py                                     # -> output/synthetic_population_final.csv,
+                                                   #    output/ipu_validation_metrics.csv
 ```
 
 Each stage automatically loads its corresponding input from `data/` and `output/`. Both `stay_points.py` and `bandicoot_features.py` detect and prioritize the denoised mobility traces if available.
 
-> **Execution Note**: `train.py` executes 5-fold stratified cross-validation with per-fold SMOTE oversampling, followed by full-dataset training across all 7 socio-demographic targets. Runtime scales with population size (`N_AGENTS` in `generate_bengaluru_data.py`).
+> **Execution Note**: `train.py` executes 5-fold stratified cross-validation with per-fold SMOTE oversampling and Platt probability calibration, followed by full-dataset training across all 7 socio-demographic targets. Runtime scales with population size (`N_AGENTS` in `generate_bengaluru_data.py`).
 
 ---
 
@@ -82,16 +90,20 @@ The pipeline predicts seven socio-demographic dimensions:
 
 ---
 
-## Output Data Product: `synthetic_population_seed.csv`
+## Output Data Products
 
-The primary output file, `output/synthetic_population_seed.csv`, contains one record per `phone_number` with:
-
+### 1. Seed Matrix: `output/synthetic_population_seed.csv`
+Contains one record per `phone_number` with:
 - `predicted_<target>`: Point prediction (most probable category).
-- `prob_<target>__<class>`: Complete predicted probability distribution over all classes for that target.
+- `prob_<target>__<class>`: Complete calibrated predicted probability distribution over all classes for that target.
 
-This dual formulation supports standard population synthesis workflows:
-- **Direct Assignment**: Discrete sampling based on hard predicted labels.
-- **Reweighted Optimization (IPU / IPF)**: Fitting full probability vectors against zonal marginal control totals (e.g. ward-level census distributions) for agent-based transport simulations.
+### 2. Expanded Population: `output/synthetic_population_final.csv`
+Contains the seed population enriched with:
+- `sample_weight`: Continuous expansion weight generated via Iterative Proportional Updating (IPU) matching zonal census marginals.
+- `integer_weight`: Discrete replicated agent counts for direct ingestion into agent-based travel demand models (e.g. MATSim).
+
+### 3. IPU Validation: `output/ipu_validation_metrics.csv`
+Contains convergence metrics, target vs. fitted marginal controls, Standardized Root Mean Square Error (SRMSE), and Total Absolute Difference (TAD).
 
 ---
 

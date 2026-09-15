@@ -41,7 +41,7 @@ rng = np.random.default_rng(RNG_SEED)
 # Configuration
 # ---------------------------------------------------------------------------
 
-N_AGENTS = 5000
+N_AGENTS = 500
 SIM_DAYS = 14
 CITY_BOUNDS = {"lat_min": 12.83, "lat_max": 13.14, "lon_min": 77.46, "lon_max": 77.78}
 N_ANTENNAS = 250  # illustrative tower density across the metro area
@@ -381,29 +381,40 @@ def generate_recharge_events(population_df, sim_days=None):
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main(out_dir="data"):
+def main(n_agents=None, sim_days=None, out_dir="data"):
     import os
+    import argparse
+    parser = argparse.ArgumentParser(description="Synthetic CDR data generator for urban population simulation.")
+    parser.add_argument("--n_agents", type=int, default=N_AGENTS, help="Number of synthetic agents (default: 500)")
+    parser.add_argument("--sim_days", type=int, default=SIM_DAYS, help="Number of simulation days (default: 14)")
+    parser.add_argument("--out_dir", type=str, default=out_dir, help="Output directory for CSV files (default: data)")
+    args, _ = parser.parse_known_args()
+
+    n_agents = n_agents if n_agents is not None else args.n_agents
+    sim_days = sim_days if sim_days is not None else args.sim_days
+    out_dir = out_dir if out_dir != "data" else args.out_dir
+
     os.makedirs(out_dir, exist_ok=True)
 
     print(f"Generating antenna layout (n={N_ANTENNAS})...")
     antennas = generate_antenna_layout()
     antennas.to_csv(f"{out_dir}/antennas.csv", index=False)
 
-    print(f"Generating population (n={N_AGENTS})...")
-    population = generate_population()
+    print(f"Generating population (n={n_agents})...")
+    population = generate_population(n_agents=n_agents)
     population.to_csv(f"{out_dir}/population.csv", index=False)
 
-    print(f"Generating mobility traces ({SIM_DAYS} days)...")
-    mobility = generate_mobility_traces(population)
+    print(f"Generating mobility traces ({sim_days} days)...")
+    mobility = generate_mobility_traces(population, sim_days=sim_days)
     mobility["antenna_id"] = assign_antennas(mobility, antennas)
     mobility.to_csv(f"{out_dir}/mobility_traces.csv", index=False)
 
     print("Generating communication event stream...")
-    comms = generate_communication_events(population)
+    comms = generate_communication_events(population, sim_days=sim_days)
     comms.to_csv(f"{out_dir}/communication_events.csv", index=False)
 
     print("Generating recharge event stream...")
-    recharges = generate_recharge_events(population)
+    recharges = generate_recharge_events(population, sim_days=sim_days)
     recharges.to_csv(f"{out_dir}/recharge_events.csv", index=False)
 
     print(f"Done. population={len(population)}, antennas={len(antennas)}, "

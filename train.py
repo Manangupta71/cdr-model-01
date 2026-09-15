@@ -45,6 +45,9 @@ TARGETS = [
 ARTIFACT_TARGETS = {"work_status"}
 
 
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.feature_selection import VarianceThreshold
+
 def _min_class_count(y):
     _, counts = np.unique(y, return_counts=True)
     return counts.min()
@@ -59,8 +62,37 @@ def _smote_resample(X_train, y_train):
     return smote.fit_resample(X_train, y_train)
 
 
-def _fit_catboost(X_train, y_train, n_classes):
-    model = CatBoostClassifier(
+def _fit_calibrated_catboost(X_train, y_train, n_classes):
+    """
+    Fits a CatBoostClassifier with SMOTE oversampling and post-hoc Platt scaling
+    (sigmoid calibration) on an un-resampled holdout split.
+
+    References:
+      - Niculescu-Mizil, A., & Caruana, R. (2005).
+        "Predicting good probabilities with supervised learning." ICML '05.
+        https://doi.org/10.1145/1102351.1102430
+      - Guo, C., Pleiss, G., Sun, Y., & Weinberger, K. Q. (2017).
+        "On calibration of modern neural networks." ICML '17.
+        https://arxiv.org/abs/1706.04599
+      - He, H., & Garcia, E. A. (2009).
+        "Learning from imbalanced data." IEEE Trans. Knowl. Data Eng., 21(9), 1263-1284.
+        https://doi.org/10.1109/TKDE.2008.239
+        (Addresses empirical prior distortion caused by synthetic oversampling).
+    """
+    n_total = len(X_train)
+    n_cal = max(10, int(0.15 * n_total))
+
+    # Keep an un-resampled calibration validation set to restore natural empirical priors
+    if n_total - n_cal >= 10:
+        X_tr_raw, y_tr_raw = X_train[:-n_cal], y_train[:-n_cal]
+        X_cal, y_cal = X_train[-n_cal:], y_train[-n_cal:]
+    else:
+        X_tr_raw, y_tr_raw = X_train, y_train
+        X_cal, y_cal = X_train, y_train
+
+    X_tr_res, y_tr_res = _smote_resample(X_tr_raw, y_tr_raw)
+
+    base_model = CatBoostClassifier(
         iterations=200,
         depth=6,
         learning_rate=0.08,
@@ -70,24 +102,27 @@ def _fit_catboost(X_train, y_train, n_classes):
         early_stopping_rounds=20,
         thread_count=-1,
     )
-    n_val = max(1, int(0.1 * len(X_train)))
-    if len(X_train) - n_val < 2:
-        model.fit(X_train, y_train)
-    else:
-        model.fit(
-            X_train[:-n_val], y_train[:-n_val],
-            eval_set=(X_train[-n_val:], y_train[-n_val:]),
-            use_best_model=True,
-        )
-    return model
+    base_model.fit(X_tr_res, y_tr_res)
+
+    # Calibrate probabilities against the un-resampled calibration set
+    try:
+        calibrator = CalibratedClassifierCV(estimator=base_model, method="sigmoid", cv="prefit")
+        calibrator.fit(X_cal, y_cal)
+        return calibrator
+    except Exception:
+        return base_model
 
 
 def train_and_evaluate(features_df, population_df, target_col, n_folds=N_FOLDS):
     df = features_df.merge(population_df[["phone_number", target_col]], on="phone_number")
     feature_cols = [c for c in features_df.columns if c != "phone_number"]
 
-    X = df[feature_cols].fillna(0.0).to_numpy()
+    X_raw = df[feature_cols].fillna(0.0).to_numpy()
     y_raw = df[target_col].to_numpy()
+
+    # Prune near-zero-variance redundant columns
+    selector = VarianceThreshold(threshold=1e-5)
+    X = selector.fit_transform(X_raw)
 
     le = LabelEncoder()
     y = le.fit_transform(y_raw)
@@ -101,10 +136,11 @@ def train_and_evaluate(features_df, population_df, target_col, n_folds=N_FOLDS):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
 
-        X_train_res, y_train_res = _smote_resample(X_train, y_train)
-        model = _fit_catboost(X_train_res, y_train_res, n_classes)
+        model = _fit_calibrated_catboost(X_train, y_train, n_classes)
 
-        y_pred = model.predict(X_test).flatten().astype(int)
+        proba = model.predict_proba(X_test)
+        y_pred = np.argmax(proba, axis=1)
+
         macro_f1 = f1_score(y_test, y_pred, average="macro", zero_division=0)
         weighted_f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
         fold_macro_f1.append(macro_f1)
@@ -132,23 +168,26 @@ def train_and_evaluate(features_df, population_df, target_col, n_folds=N_FOLDS):
 
 def train_final_model_and_predict(features_df, population_df, target_col):
     """
-    Fits one final model per target on all agents (post-SMOTE) and returns
+    Fits one final calibrated model per target on all agents and returns
     predicted classes and class probabilities formatted for synthetic
     population generation.
     """
     df = features_df.merge(population_df[["phone_number", target_col]], on="phone_number")
     feature_cols = [c for c in features_df.columns if c != "phone_number"]
 
-    X_all = features_df[feature_cols].fillna(0.0).to_numpy()  # predict for every agent, not just labeled ones
-    X_train = df[feature_cols].fillna(0.0).to_numpy()
+    X_all_raw = features_df[feature_cols].fillna(0.0).to_numpy()
+    X_train_raw = df[feature_cols].fillna(0.0).to_numpy()
     y_raw = df[target_col].to_numpy()
+
+    selector = VarianceThreshold(threshold=1e-5)
+    X_train = selector.fit_transform(X_train_raw)
+    X_all = selector.transform(X_all_raw)
 
     le = LabelEncoder()
     y_train = le.fit_transform(y_raw)
     n_classes = len(le.classes_)
 
-    X_train_res, y_train_res = _smote_resample(X_train, y_train)
-    model = _fit_catboost(X_train_res, y_train_res, n_classes)
+    model = _fit_calibrated_catboost(X_train, y_train, n_classes)
 
     proba = model.predict_proba(X_all)
     pred_idx = np.argmax(proba, axis=1)

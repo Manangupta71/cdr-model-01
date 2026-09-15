@@ -376,8 +376,78 @@ def _reorder_key(key, week_part, day_part):
     parts = key.split("__")
     metric, rest = parts[0], parts[1:]
     return "__".join([metric, week_part, day_part] + rest)
+
+
+def _place_and_anchor_indicators(agent_id, anchors_dict, stays_by_agent):
+    """
+    Extracts high-level spatial anchor and stay-point activity indicators:
+      - Commute distance (meters) between inferred home and work centroids.
+      - Number of distinct physical activity places visited.
+      - Place dwell-time Shannon entropy.
+      - Total and average stay duration.
+      - Fraction of stay dwell time spent at home and work anchors.
+
+    References:
+      - Alexander, L., Jiang, S., Murga, M., & González, M. C. (2015).
+        "Origin–destination trips by purpose and time of day inferred from mobile phone data."
+        Transportation Research Part C: Emerging Technologies, 58, 240-250.
+        https://doi.org/10.1016/j.trc.2015.02.018
+      - Pappalardo, L., Pedreschi, D., Smoreda, Z., & Giannotti, F. (2015).
+        "Using big data to study the link between human mobility and socio-economic status."
+        Journal of The Royal Society Interface, 12(113), 20150597.
+        https://doi.org/10.1098/rsif.2015.0597
+    """
+    from stay_points import haversine_m
+
+    feats = {
+        "commute_distance_m": 0.0,
+        "has_inferred_work": 0,
+        "number_of_places": 0,
+        "entropy_of_places": 0.0,
+        "total_stay_duration_min": 0.0,
+        "mean_stay_duration_min": 0.0,
+        "percent_dwell_at_home": 0.0,
+        "percent_dwell_at_work": 0.0,
+    }
+
+    anchor = anchors_dict.get(agent_id, None)
+    if anchor is not None:
+        h_lat, h_lon = anchor.get("inferred_home_lat"), anchor.get("inferred_home_lon")
+        w_lat, w_lon = anchor.get("inferred_work_lat"), anchor.get("inferred_work_lon")
+        has_work = bool(anchor.get("has_inferred_work", False))
+        feats["has_inferred_work"] = 1 if has_work else 0
+
+        if has_work and np.isfinite(h_lat) and np.isfinite(w_lat):
+            feats["commute_distance_m"] = float(haversine_m(h_lat, h_lon, w_lat, w_lon))
+
+    stays = stays_by_agent.get(agent_id, None)
+    if stays is not None and len(stays) > 0:
+        feats["number_of_places"] = int(stays["place_id"].nunique()) if "place_id" in stays.columns else 0
+
+        # Dwell time per stay
+        arr = pd.to_datetime(stays["arrival_time"])
+        dep = pd.to_datetime(stays["departure_time"])
+        durations = np.maximum((dep - arr).dt.total_seconds().to_numpy() / 60.0, 1.0)
+        total_dur = float(np.sum(durations))
+        feats["total_stay_duration_min"] = total_dur
+        feats["mean_stay_duration_min"] = float(np.mean(durations))
+
+        if "place_id" in stays.columns and total_dur > 0:
+            place_durations = pd.Series(durations).groupby(stays["place_id"].to_numpy()).sum().to_numpy()
+            feats["entropy_of_places"] = _shannon_entropy(place_durations)
+
+        if "place_label" in stays.columns and total_dur > 0:
+            home_mask = (stays["place_label"] == "home").to_numpy()
+            work_mask = (stays["place_label"] == "work").to_numpy()
+            feats["percent_dwell_at_home"] = float(np.sum(durations[home_mask]) / total_dur)
+            feats["percent_dwell_at_work"] = float(np.sum(durations[work_mask]) / total_dur)
+
+    return feats
+
+
 def compute_agent_features(agent_id, phone_number, interactions_all, mobility_all,
-                            recharges_all, home_antenna_id, sim_days):
+                            recharges_all, home_antenna_id, sim_days,
+                            anchors_dict=None, stays_by_agent=None):
     row = {"phone_number": phone_number}
 
     agent_events = interactions_all[interactions_all["agent_id"] == agent_id]
@@ -419,24 +489,60 @@ def compute_agent_features(agent_id, phone_number, interactions_all, mobility_al
     row["average_balance_recharges"] = (
         float(agent_recharges["balance_after"].mean()) if len(agent_recharges) else 0.0
     )
+
+    # Inferred spatial anchor and stay-point features (Alexander et al., 2015; Pappalardo et al., 2015)
+    if anchors_dict is not None and stays_by_agent is not None:
+        place_feats = _place_and_anchor_indicators(agent_id, anchors_dict, stays_by_agent)
+        row.update(place_feats)
+
     return row
 
 
 def build_bandicoot_feature_table(population_df, comm_events_df, mobility_df,
-                                   antennas_df, recharge_events_df, sim_days):
+                                   antennas_df, recharge_events_df, sim_days,
+                                   anchors_df=None, labeled_stays_df=None):
     interactions_all = _build_interaction_table(comm_events_df)
 
-    # nearest antenna to each agent's home point, used for percent_at_home
+    # Map nearest antenna to inferred home anchor (eliminating ground-truth coordinate leakage)
     from scipy.spatial import cKDTree
     tree = cKDTree(antennas_df[["lat", "lon"]].to_numpy())
-    _, home_idx = tree.query(population_df[["home_lat", "home_lon"]].to_numpy())
-    home_antenna = dict(zip(population_df["agent_id"], antennas_df["antenna_id"].to_numpy()[home_idx]))
+
+    anchors_dict = {}
+    if anchors_df is not None and len(anchors_df) > 0:
+        anchors_dict = {row["agent_id"]: row.to_dict() for _, row in anchors_df.iterrows()}
+
+    stays_by_agent = {}
+    if labeled_stays_df is not None and len(labeled_stays_df) > 0:
+        for aid, grp in labeled_stays_df.groupby("agent_id"):
+            stays_by_agent[aid] = grp
+
+    # Determine home antenna per agent strictly from INFERRED anchors or nighttime mobility pings
+    home_antenna = {}
+    for agent in population_df.itertuples():
+        aid = agent.agent_id
+        anchor = anchors_dict.get(aid, None)
+        if anchor and np.isfinite(anchor.get("inferred_home_lat", np.nan)):
+            h_lat, h_lon = anchor["inferred_home_lat"], anchor["inferred_home_lon"]
+        else:
+            # Fallback: estimate home centroid from nighttime pings (20:00-07:00)
+            agent_pings = mobility_df[mobility_df["agent_id"] == aid]
+            night_pings = agent_pings[(agent_pings["timestamp"].dt.hour < 7) | (agent_pings["timestamp"].dt.hour >= 20)]
+            if len(night_pings) > 0:
+                h_lat, h_lon = night_pings["lat"].mean(), night_pings["lon"].mean()
+            elif len(agent_pings) > 0:
+                h_lat, h_lon = agent_pings["lat"].mean(), agent_pings["lon"].mean()
+            else:
+                h_lat, h_lon = antennas_df["lat"].mean(), antennas_df["lon"].mean()
+
+        _, home_idx = tree.query([[h_lat, h_lon]])
+        home_antenna[aid] = antennas_df["antenna_id"].iloc[home_idx[0]]
 
     rows = []
     for agent in population_df.itertuples():
         row = compute_agent_features(
             agent.agent_id, agent.phone_number, interactions_all, mobility_df,
             recharge_events_df, home_antenna[agent.agent_id], sim_days,
+            anchors_dict=anchors_dict, stays_by_agent=stays_by_agent
         )
         rows.append(row)
 
@@ -454,9 +560,21 @@ if __name__ == "__main__":
     print(f"Reading mobility pings from {mobility_path}")
     mobility = pd.read_csv(mobility_path, parse_dates=["timestamp"])
 
+    # Load inferred place anchors (Toole et al., 2015; Alexander et al., 2015)
+    anchors = None
+    labeled_stays = None
+    if os.path.exists("output/home_work_anchors.csv"):
+        print("Reading inferred home/work anchors from output/home_work_anchors.csv (no ground-truth coordinate leakage)...")
+        anchors = pd.read_csv("output/home_work_anchors.csv")
+    if os.path.exists("output/stay_points_labeled.csv"):
+        print("Reading labeled stay points from output/stay_points_labeled.csv...")
+        labeled_stays = pd.read_csv("output/stay_points_labeled.csv", parse_dates=["arrival_time", "departure_time"])
+
     import generate_bengaluru_data as gen
     features = build_bandicoot_feature_table(
-        population, comm_events, mobility, antennas, recharges, gen.SIM_DAYS
+        population, comm_events, mobility, antennas, recharges, gen.SIM_DAYS,
+        anchors_df=anchors, labeled_stays_df=labeled_stays
     )
     features.to_csv("output/bandicoot_features.csv", index=False)
     print(f"Bandicoot-style feature table: {features.shape[0]} agents x {features.shape[1] - 1} indicators.")
+

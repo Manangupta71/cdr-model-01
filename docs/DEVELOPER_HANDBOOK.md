@@ -23,11 +23,12 @@ Generates telecommunication data streams simulating mobile operator exports for 
 
 ### `noise_reduction.py`
 
-Applies trajectory smoothing to raw mobility coordinates prior to spatial analysis:
+Applies cellular trajectory smoothing to raw mobility coordinates prior to spatial analysis:
 
+- `filter_ping_pong_handovers`: Suppresses high-frequency cellular oscillation artifacts where subscribers bounce rapidly between adjacent towers ($A \to B \to A$) within a short temporal window (Jiang et al., 2017, IEEE T-ITS; Caceres et al., 2012, IET-ITS).
 - Constant-velocity 2D kinematic model implemented in planar coordinates (meters).
-- `kalman_filter_trace`: Closed-form linear-Gaussian Kalman filter (default). Fast and optimal for Gaussian ping jitter.
-- `particle_filter_trace`: Sequential Importance Resampling (SIR) bootstrap particle filter, providing robustness for non-Gaussian or multi-modal observation noise (Zheng, 2015).
+- `kalman_filter_trace`: Closed-form linear-Gaussian Kalman filter (default). Fast and optimal for Gaussian ping jitter (Zheng, 2015).
+- `particle_filter_trace`: Sequential Importance Resampling (SIR) bootstrap particle filter, providing robustness for non-Gaussian or multi-modal observation noise.
 - Trajectory smoothing is isolated strictly per subscriber (`agent_id`).
 - **Parameter Tuning**: `process_noise_std` (state dynamics) and `measurement_noise_std` (spatial observation noise) correspond directly to simulation physical dimensions.
 
@@ -59,30 +60,44 @@ Implements semantic place categorization (Toole et al., 2015, Algorithm 6):
 
 ### `bandicoot_features.py`
 
-Extracts the full 868-column behavioral indicator schema modeled after the `bandicoot` standard (de Montjoye et al., 2016):
+Extracts the full behavioral indicator schema modeled after the `bandicoot` standard (de Montjoye et al., 2016) augmented with inferred spatial stay-point indicators (Alexander et al., 2015; Pappalardo et al., 2015):
 
+- **Data Lineage Closure**: Ingests `output/home_work_anchors.csv` and `output/stay_points_labeled.csv` rather than ground-truth population coordinates, eliminating ground-truth leakage.
+- **Inferred Activity Indicators**: Adds commute distance between inferred home and work centroids (`commute_distance_m`), work anchor presence (`has_inferred_work`), place count (`number_of_places`), place dwell-time entropy (`entropy_of_places`), and total/mean stay duration.
 - Temporal Partitions: Split across 3 week parts (`allweek`, `weekday`, `weekend`) $\times$ 3 day parts (`allday`, `day`, `night`).
 - Channels: Interaction indicators computed across `call`, `text`, and combined `callandtext`.
 - Statistical Moments: Distributional metrics expanded into 7 descriptive statistics (mean, std, median, skewness, kurtosis, min, max).
 - Key Formatting: Internal indicator calculations are formatted into canonical column names (`metric__weekpart__daypart__channel[__stat]`).
-- Operational Parameters: Inactivity threshold for conversation segmentation (>1hr), SMS response window (1hr), and Pareto cutoffs (80% concentration).
 
 ---
 
 ### `train.py`
 
-Implements machine learning model training and inference across the 7 socio-demographic targets:
+Implements machine learning model training and calibrated inference across the 7 socio-demographic targets:
 
 1. `train_and_evaluate()`:
    - 5-fold stratified cross-validation for out-of-fold generalization estimation.
+   - Near-zero variance column pruning via `VarianceThreshold`.
    - SMOTE oversampling applied strictly within each training fold to address class imbalance without data leakage.
-   - CatBoost classifier with early stopping against an internal validation split.
+   - **Probability Calibration**: Fits Platt scaling (sigmoid calibration via `CalibratedClassifierCV`) on un-resampled holdout data, restoring natural empirical priors distorted by SMOTE (Niculescu-Mizil & Caruana, 2005; He & Garcia, 2009).
    - Outputs macro-F1, weighted-F1, and complete classification reports.
 
 2. `train_final_model_and_predict()` / `export_for_population_synthesis()`:
-   - Trains final production models on the complete dataset using CatBoost.
-   - Predicts discrete classes (`predicted_<target>`) and full probability distributions (`prob_<target>__<class>`) for every subscriber.
+   - Trains final calibrated production models on the complete dataset using CatBoost + Platt scaling.
+   - Predicts discrete classes (`predicted_<target>`) and fully calibrated probability distributions (`prob_<target>__<class>`) for every subscriber.
    - Outputs `output/synthetic_population_seed.csv`.
+
+---
+
+### `ipu.py`
+
+Downstream population synthesis module implementing Iterative Proportional Updating (IPU) (Ye et al., 2009; Sun & Erath, 2015):
+
+- Ingests `output/synthetic_population_seed.csv`.
+- Aligns individual multi-attribute probability vectors against zonal marginal control totals (e.g. ward-level census distributions for age, gender, education, and income).
+- Iteratively adjusts agent weights to convergence.
+- Evaluates goodness of fit using Standardized Root Mean Square Error (SRMSE) and Total Absolute Difference (TAD).
+- Exports weighted expanded population seeds (`output/synthetic_population_final.csv`) and validation tables (`output/ipu_validation_metrics.csv`).
 
 ---
 

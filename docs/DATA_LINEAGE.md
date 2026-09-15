@@ -38,8 +38,11 @@ This audit details the data generation mechanics and distinguishes empirically c
 ## Methodological Implementation Notes
 
 1. **Stay-Point Extraction Algorithm**: Implements the four-step procedure from Toole et al. (2015), *Transportation Research Part C*, Algorithms 2–5 (candidate stays, grid-based agglomerative clustering, and final snapping pass).
-2. **Feature Schema Alignment**: Follows bandicoot's standard `metric__weekpart__daypart__channel[__stat]` naming convention across all 868 behavioral indicators.
-3. **Numerical Stability in Moment Calculations**: Zero-variance and near-constant samples are handled explicitly to prevent NaN values in skewness and kurtosis calculations prior to SMOTE oversampling.
+2. **Elimination of Coordinate Leakage**: In real CDR deployments, ground-truth home and work coordinates are unobserved. `bandicoot_features.py` strictly consumes inferred home/work centroids from `label_places.py` (`output/home_work_anchors.csv`) rather than querying `population.csv`, closing the pipeline loop.
+3. **Cellular Ping-Pong Handover Suppression**: Pre-processes raw antenna pings to eliminate high-frequency ping-pong bouncing between adjacent cellular towers prior to Kalman filtering (Jiang et al., 2017, *IEEE T-ITS*; Caceres et al., 2012, *IET-ITS*).
+4. **Probability Calibration Post-SMOTE**: SMOTE balances training frequencies, which artificially distorts predicted posterior log-odds. `train.py` applies Platt scaling (sigmoid calibration) on an un-resampled holdout split (Niculescu-Mizil & Caruana, 2005; He & Garcia, 2009) to recover well-calibrated class probability vectors.
+5. **Feature Schema Alignment**: Follows bandicoot's standard `metric__weekpart__daypart__channel[__stat]` naming convention across behavioral indicators, augmented by stay-point activity indicators (Alexander et al., 2015; Pappalardo et al., 2015).
+6. **Downstream Population Synthesis (IPU)**: Seeds produced by `train.py` are expanded to match zonal census marginal distributions using Iterative Proportional Updating (`ipu.py`), validated with SRMSE and Total Absolute Difference metrics (Ye et al., 2009; Sun & Erath, 2015).
 
 ---
 
@@ -49,3 +52,5 @@ Transitioning from synthetic simulation to operator-grade Call Detail Records re
 
 1. **Probabilistic Record Linkage**: Employing Fellegi-Sunter record linkage (Fellegi & Sunter, 1969) to align pseudo-anonymized subscriber IDs with ground-truth survey samples.
 2. **Ground-Truth Calibration**: Aligning behavioral indicators against representative household travel survey datasets for external validation.
+3. **Zonal Marginal Constraint Matching**: Applying `ipu.py` against ward-level census tables (e.g. Census of India 2011 Primary Census Abstract or BBMP administrative wards) for travel demand model calibration.
+
