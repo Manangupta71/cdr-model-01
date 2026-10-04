@@ -8,7 +8,7 @@ A computational pipeline that simulates realistic Call Detail Record (CDR) data 
 
 ## Pipeline Architecture
 
-The pipeline models the complete path from raw telecommunications telemetry to calibrated population synthesis seeds and expanded synthetic agents:
+The pipeline models the complete path from raw telecommunications telemetry to calibrated population synthesis seeds, expanded synthetic agents, and microscopic activity travel plans:
 
 ```
 generate_bengaluru_data.py  → Raw CDR telemetry (voice calls, SMS, spatial pings,
@@ -19,10 +19,16 @@ stay_points.py              → Spatial-temporal stay point extraction (Toole et
 label_places.py             → Meaningful place inference (Home / Work / Other anchors)
 bandicoot_features.py       → Behavioral indicator extraction consuming inferred anchors
                               (Alexander et al., 2015; de Montjoye et al., 2016)
-train.py                    → 5-fold CV & CatBoost with Platt probability calibration
-                              (Niculescu-Mizil & Caruana, 2005; He & Garcia, 2009)
+graph_features.py           → Communication network topology & spatial co-location encounters
+                              (Eagle et al., 2010; Onnela et al., 2007; Dong et al., 2014)
+motifs.py                   → Daily human mobility motifs, entropy, & commute regularity
+                              (Schneider et al., 2013; Jiang et al., 2016)
+train.py                    → Conditional Classifier Chains along demographic DAG with Platt calibration
+                              (Sun & Erath, 2015; Read et al., 2011; Niculescu-Mizil & Caruana, 2005)
 ipu.py                      → Downstream Iterative Proportional Updating (IPU) expanding
-                              seed profiles to zonal census totals (Ye et al., 2009; Sun & Erath, 2015)
+                              seed profiles to zonal census totals (Ye et al., 2009)
+matsim_plans.py             → 24-hr activity travel diaries & valid MATSim plans.xml
+                              (Bassolas et al., 2019; Axhausen & Horni, 2016)
 ```
 
 ---
@@ -37,7 +43,7 @@ pip install -r requirements.txt
 
 ### 2. Pipeline Execution
 
-Run the pipeline sequentially from raw data simulation to final expanded population synthesis:
+Run the pipeline sequentially from raw data simulation to final expanded population synthesis and MATSim activity plans:
 
 ```bash
 # 1. Generate synthetic CDR telemetry (default n=500, configurable)
@@ -58,17 +64,27 @@ python label_places.py                            # -> output/stay_points_labele
 # 5. Extract behavioral indicators & commute features (using inferred anchors)
 python bandicoot_features.py                      # -> output/bandicoot_features.csv
 
-# 6. Train calibrated classifiers and export synthetic population seed
+# 6. Extract relational communication network & co-location features
+python graph_features.py                          # -> output/graph_features.csv
+
+# 7. Extract daily mobility motifs & tour regularity
+python motifs.py                                  # -> output/mobility_motifs.csv
+
+# 8. Train calibrated classifier chains & export synthetic population seed
 python train.py                                   # -> output/results_summary.csv,
                                                    #    output/classification_reports.txt,
                                                    #    output/synthetic_population_seed.csv
 
-# 7. Expand population seeds to zonal census marginal controls via IPU
+# 9. Expand population seeds to zonal census marginal controls via IPU
 python ipu.py                                     # -> output/synthetic_population_final.csv,
                                                    #    output/ipu_validation_metrics.csv
+
+# 10. Generate agent-based 24-hr activity diaries and MATSim plans.xml
+python matsim_plans.py                            # -> output/activity_travel_diaries.csv,
+                                                   #    output/plans.xml
 ```
 
-Each stage automatically loads its corresponding input from `data/` and `output/`. Both `stay_points.py` and `bandicoot_features.py` detect and prioritize the denoised mobility traces if available.
+Each stage automatically loads its corresponding input from `data/` and `output/`. The pipeline strictly preserves **anonymized subscriber IDs** across every module without assuming unmasked PII.
 
 > **Execution Note**: `train.py` executes 5-fold stratified cross-validation with per-fold SMOTE oversampling and Platt probability calibration, followed by full-dataset training across all 7 socio-demographic targets. Runtime scales with population size (`N_AGENTS` in `generate_bengaluru_data.py`).
 
@@ -100,10 +116,18 @@ Contains one record per `phone_number` with:
 ### 2. Expanded Population: `output/synthetic_population_final.csv`
 Contains the seed population enriched with:
 - `sample_weight`: Continuous expansion weight generated via Iterative Proportional Updating (IPU) matching zonal census marginals.
-- `integer_weight`: Discrete replicated agent counts for direct ingestion into agent-based travel demand models (e.g. MATSim).
+- `integer_weight`: Discrete replicated agent counts for direct ingestion into agent-based travel demand models.
 
 ### 3. IPU Validation: `output/ipu_validation_metrics.csv`
 Contains convergence metrics, target vs. fitted marginal controls, Standardized Root Mean Square Error (SRMSE), and Total Absolute Difference (TAD).
+
+### 4. Relational & Topological Indicator Tables
+- `output/graph_features.csv`: 11 communication graph centrality (PageRank, degree, reciprocity) and physical co-location encounter metrics.
+- `output/mobility_motifs.csv`: 6 motif indicators (primary motif ID, frequency, Shannon entropy, commute regularity).
+
+### 5. Microscopic Simulation Plans: `output/plans.xml` & `activity_travel_diaries.csv`
+- `output/activity_travel_diaries.csv`: 24-hour sequence of scheduled activities (home, work, education, leisure) with exact departure times and mode choice (`car`, `pt`, `walk`).
+- `output/plans.xml`: W3C valid XML conforming to the MATSim DTD specification (`http://www.matsim.org/files/dtd/plans_v4.dtd`) ready for traffic micro-simulation.
 
 ---
 

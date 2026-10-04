@@ -71,21 +71,63 @@ Extracts the full behavioral indicator schema modeled after the `bandicoot` stan
 
 ---
 
+### `graph_features.py`
+
+Extracts relational communication network topology and physical co-location encounter metrics on anonymized subscriber identifiers:
+
+- **Academic Grounding**:
+  - Eagle, N., Macy, M., & Claxton, R. (2010). "Network diversity and economic development." *Science*, 328(5981), 1029–1031. https://doi.org/10.1126/science.1186605
+  - Onnela, J.-P. et al. (2007). "Structure and tie strengths in mobile communication networks." *PNAS*, 104(18), 7332–7336. https://doi.org/10.1073/pnas.0610245104
+  - Dong, Y. et al. (2014). "Inferring social ties across heterogenous networks." *ACM SIGKDD*, 771–780. https://doi.org/10.1145/2623330.2623703
+- **Network Topologies**:
+  - **Directed Social Graph**: Built from aggregated communication records (`caller_phone` $\to$ `callee_phone`). Computes directed in-degree, out-degree, degree ratio, PageRank centrality, local clustering coefficient, and mutual reciprocity.
+  - **Spatial Co-Location Graph**: Bipartite projection linking anonymized subscribers who simultaneously occupy the same stay points within overlapping temporal intervals ($\le 1$ hour). Computes encounter degree, total physical encounters, and co-location clustering coefficient.
+- **Anonymization Assurance**: All graph projections preserve pseudonymous subscriber IDs without requiring any unmasked PII.
+- **Output**: Generates `output/graph_features.csv` (11 graph indicators per subscriber).
+
+---
+
+### `motifs.py`
+
+Extracts daily individual mobility motifs, tour entropy, and commute regularity:
+
+- **Academic Grounding**:
+  - Schneider, C. M. et al. (2013). "Unravelling daily human mobility motifs." *J. R. Soc. Interface*, 10(84), 20130246. https://doi.org/10.1098/rsif.2013.0246
+  - Jiang, S. et al. (2016). "TimeGeo: a geospatially grounded framework for representing human mobility with daily activity patterns." *PNAS*, 113(37), E5378–E5387. https://doi.org/10.1073/pnas.1524261113
+- **Motif Classification**:
+  - Classifies daily stay sequences into canonical motif topologies:
+    - **Motif 1 (H-W-H)**: Standard simple commute between Home and Work.
+    - **Motif 2 (H-W-O-H)**: Work commute with intermediate secondary errand/activity.
+    - **Motif 3 (H-O-H)**: Home to non-work activity and return.
+    - **Motif 4 (Complex)**: Multi-stop tours with $\ge 4$ activities.
+- **Indicators**:
+  - `primary_motif_id`: Dominant daily tour topology.
+  - `primary_motif_fraction`: Frequency of the dominant motif across observation days.
+  - `motif_entropy`: Shannon entropy of daily motif distributions.
+  - `commute_regularity`: Fraction of observation days with an inferred work visit.
+  - `mean_daily_stops` & `distinct_motifs_count`: Daily tour complexity metrics.
+- **Output**: Generates `output/mobility_motifs.csv` (6 motif indicators per subscriber).
+
+---
+
 ### `train.py`
 
-Implements machine learning model training and calibrated inference across the 7 socio-demographic targets:
+Implements multi-target **Conditional Classifier Chains** along the demographic dependency DAG with Platt probability calibration:
 
-1. `train_and_evaluate()`:
-   - 5-fold stratified cross-validation for out-of-fold generalization estimation.
-   - Near-zero variance column pruning via `VarianceThreshold`.
-   - SMOTE oversampling applied strictly within each training fold to address class imbalance without data leakage.
-   - **Probability Calibration**: Fits Platt scaling (sigmoid calibration via `CalibratedClassifierCV`) on un-resampled holdout data, restoring natural empirical priors distorted by SMOTE (Niculescu-Mizil & Caruana, 2005; He & Garcia, 2009).
-   - Outputs macro-F1, weighted-F1, and complete classification reports.
-
-2. `train_final_model_and_predict()` / `export_for_population_synthesis()`:
-   - Trains final calibrated production models on the complete dataset using CatBoost + Platt scaling.
-   - Predicts discrete classes (`predicted_<target>`) and fully calibrated probability distributions (`prob_<target>__<class>`) for every subscriber.
-   - Outputs `output/synthetic_population_seed.csv`.
+- **Academic Grounding**:
+  - Read, J. et al. (2011). "Classifier chains for multi-label classification." *Machine Learning*, 85(3), 333–359. https://doi.org/10.1007/s10994-011-5256-5
+  - Sun, L., & Erath, A. (2015). "A Bayesian network approach for population synthesis." *Transportation Research Part C*, 61, 49–62. https://doi.org/10.1016/j.trc.2015.10.010
+  - Niculescu-Mizil, A., & Caruana, R. (2005). "Predicting good probabilities with supervised learning." *ICML '05*. https://doi.org/10.1145/1102351.1102430
+  - He, H., & Garcia, E. A. (2009). "Learning from imbalanced data." *IEEE TKDE*, 21(9), 1263–1284. https://doi.org/10.1109/TKDE.2008.239
+- **Unified Feature Space**: Merges baseline `bandicoot_features.csv`, relational `graph_features.csv`, and `mobility_motifs.csv`.
+- **Bayesian Dependency DAG**:
+  - Targets are chained sequentially: $\text{Age} \to \text{Gender} \to \text{Education} \to \text{Occupation} \to \text{Work Status} \to \text{Income} \to \text{Socio-Demographic Class}$.
+  - During 5-fold cross-validation, out-of-fold predicted class probability vectors from parent models are injected as conditioning features for downstream targets, preventing target leakage while enforcing inter-attribute joint consistency.
+- **SMOTE & Sigmoid Calibration**:
+  - SMOTE balances training fold distributions.
+  - Platt scaling (`CalibratedClassifierCV(method="sigmoid", cv="prefit")`) fit on un-resampled holdouts corrects distorted posteriors to true empirical priors.
+- **Collinearity Pruning**: `VarianceThreshold(threshold=1e-5)` removes zero-variance features before tree construction.
+- **Outputs**: Generates `output/results_summary.csv`, `output/classification_reports.txt`, and `output/synthetic_population_seed.csv`.
 
 ---
 
@@ -101,15 +143,31 @@ Downstream population synthesis module implementing Iterative Proportional Updat
 
 ---
 
-## Graph-Based Feature Extensions
+### `matsim_plans.py`
 
-The pipeline's modular structure allows incorporating relational network features alongside `bandicoot_features.py`:
+Synthesizes agent-based 24-hour activity-travel diaries and standard MATSim `plans.xml` for microscopic traffic simulation:
 
-- **Spatial Proximity Network**: k-NN graph constructed across inferred home/work centroids (`scipy.spatial.cKDTree` or `sklearn.neighbors.NearestNeighbors`).
-- **Co-location Network**: Bipartite projection linking subscribers who share temporal stay points.
-- **Communication Social Network**: Weighted directed graph constructed from call/SMS logs.
+- **Academic Grounding**:
+  - Bassolas, A. et al. (2019). "Mobile phone records to feed activity-based travel demand models: MATSim for studying a cordon toll policy in Barcelona." *Transportation Research Part A*, 121, 56–74. https://doi.org/10.1016/j.tra.2019.01.007
+  - Hörl, S., & Balać, M. (2021). "Synthetic population and travel demand for Paris and Île-de-France based on open and public data." *Transportation Research Part C*, 130, 103291. https://doi.org/10.1016/j.trc.2021.103291
+  - Axhausen, K. W., & Horni, A. (2016). *The Multi-Agent Transport Simulation MATSim*. Ubiquity Press. https://doi.org/10.5334/baw
+- **Activity Generation**:
+  - Merges expanded synthetic population with inferred spatial home/work anchors.
+  - Models temporal activity schedules (departure times, work/education durations, evening return) with individual stochasticity.
+  - Selects primary transportation mode (`car`, `pt`, `walk`) calibrated to predicted income bracket and vehicle access.
+- **Outputs**:
+  - `output/activity_travel_diaries.csv`: Relational table of scheduled activities per agent.
+  - `output/plans.xml`: Fully valid W3C standard XML conforming to the MATSim DTD specification (`http://www.matsim.org/files/dtd/plans_v4.dtd`).
 
-Centrality measures (degree, PageRank, clustering coefficients) extracted from these graphs via `networkx` can be merged directly into the feature matrix using `phone_number`.
+---
+
+## Anonymized CDR Data Pipeline Compliance
+
+The pipeline is explicitly engineered to operate in enterprise telecommunications environments under strict data privacy regulations (e.g. GDPR, DPDP Act):
+
+1. **Pseudonymous Hashing**: Primary subscriber keys (`phone_number`, `subscriber_id`) are treated strictly as arbitrary string identifiers. The codebase makes no assumptions regarding phone number formats, sequential integer IDs, or unmasked subscriber PII.
+2. **Aggregated Interaction Graphing**: Social ties and co-location matrices link pseudonymous hashes directly without joining identity registries.
+3. **Differential Anchor Resolution**: Inferred home and work centroids represent spatial activity clusters, which can be aggregated or clipped to administrative census wards to eliminate pinpoint localization risks before downstream model ingestion.
 
 ---
 

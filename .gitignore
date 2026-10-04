@@ -3,6 +3,7 @@ __pycache__/
 data/*.csv
 output/*.csv
 output/*.txt
+output/*.xml
 .ipynb_checkpoints/
 .DS_Store
 catboost_info/

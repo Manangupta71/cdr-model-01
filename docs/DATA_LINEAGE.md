@@ -25,6 +25,9 @@ This audit details the data generation mechanics and distinguishes empirically c
 | Social network edge structure | PLAUSIBLE | Household, workplace, and weak-tie community graph structures generating realistic call/SMS interactions. |
 | Communication event timing & durations | PLAUSIBLE | Poisson call generation and exponential call duration distributions. |
 | **Recharge frequency and amount by income** | **GROUNDED (direction)** | Calibrated following Steele et al. (2017), *J. R. Soc. Interface*: lower-income users top up more frequently in smaller amounts. |
+| **Social network centrality & reciprocity** | **GROUNDED (methodology)** | Ingests communication graph topology computing directed in/out degree, PageRank, clustering, and reciprocity (Eagle et al., 2010; Onnela et al., 2007). |
+| **Daily human mobility motifs** | **GROUNDED (classification)** | Daily activity chains mapped to canonical motifs (H-W-H, H-W-O-H, H-O-H, complex) with Shannon entropy and commute regularity (Schneider et al., 2013; Jiang et al., 2016). |
+| **Microscopic activity plans & mode choice** | **GROUNDED (framework)** | 24-hour activity-travel schedules and MATSim plans.xml generated from predicted demographics and inferred anchors (Bassolas et al., 2019; Axhausen & Horni, 2016). |
 
 ---
 
@@ -43,6 +46,11 @@ This audit details the data generation mechanics and distinguishes empirically c
 4. **Probability Calibration Post-SMOTE**: SMOTE balances training frequencies, which artificially distorts predicted posterior log-odds. `train.py` applies Platt scaling (sigmoid calibration) on an un-resampled holdout split (Niculescu-Mizil & Caruana, 2005; He & Garcia, 2009) to recover well-calibrated class probability vectors.
 5. **Feature Schema Alignment**: Follows bandicoot's standard `metric__weekpart__daypart__channel[__stat]` naming convention across behavioral indicators, augmented by stay-point activity indicators (Alexander et al., 2015; Pappalardo et al., 2015).
 6. **Downstream Population Synthesis (IPU)**: Seeds produced by `train.py` are expanded to match zonal census marginal distributions using Iterative Proportional Updating (`ipu.py`), validated with SRMSE and Total Absolute Difference metrics (Ye et al., 2009; Sun & Erath, 2015).
+7. **Social & Spatial Co-Location Graphs**: `graph_features.py` extracts directed communication topology (PageRank, degree ratio, reciprocity) and spatial encounter degrees across pseudonymized subscriber identifiers (*Eagle et al., 2010, Science*; *Dong et al., 2014, KDD*).
+8. **Daily Human Mobility Motifs**: `motifs.py` classifies daily travel chains into topological motifs (H-W-H, H-W-O-H, H-O-H, complex) and computes Shannon motif entropy and commute regularity (*Schneider et al., 2013, J. R. Soc. Interface*; *Jiang et al., 2016, PNAS TimeGeo*).
+9. **Bayesian Dependency DAG & Classifier Chains**: `train.py` structures prediction along the demographic DAG ($\text{Age} \to \text{Gender} \to \text{Education} \to \text{Occupation} \to \text{Work Status} \to \text{Income} \to \text{Class}$) using out-of-fold probability vectors to ensure attribute consistency (*Sun & Erath, 2015, TR-C*; *Read et al., 2011, Machine Learning*).
+10. **Agent-Based Traffic Micro-Simulation Inputs**: `matsim_plans.py` synthesizes 24-hour activity-travel diaries and standard MATSim `plans.xml` from predicted demographics and spatial anchors (*Bassolas et al., 2019, TR-A*; *Axhausen & Horni, 2016*).
+11. **Anonymized Data Compliance**: All pipeline components operate strictly on hashed/pseudonymized strings (`phone_number`), guaranteeing zero dependency on sequential integer IDs or plaintext PII.
 
 ---
 

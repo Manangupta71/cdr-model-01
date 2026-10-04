@@ -141,7 +141,13 @@ Methodological foundations, academic literature, and research publications suppo
   - **Status**: Q1 (Biophysics & Complex Systems)
   - **Public Link (DOI)**: https://doi.org/10.1098/rsif.2013.0246
   - **Open Access**: https://royalsocietypublishing.org/doi/10.1098/rsif.2013.0246
-  - **Pipeline Context**: Identifies the 17 fundamental directed network motifs representing daily human tour structures from CDRs, linking motif diversity to occupation and travel behavior.
+  - **Pipeline Context**: Identifies the fundamental directed network motifs representing daily human tour structures from CDRs, implemented in `motifs.py`.
+
+- **Jiang, S., Yang, Y., Gupta, S., Veneziano, D., Athavale, S., & González, M. C. (2016).** "The TimeGeo modeling framework for urban mobility without travel surveys."
+  *Proceedings of the National Academy of Sciences (PNAS)*, 113(37), E5370–E5378.
+  - **Status**: Q1 (Multidisciplinary Sciences; Top Academy Flagship)
+  - **Public Link (DOI)**: https://doi.org/10.1073/pnas.1524261113
+  - **Pipeline Context**: Mechanistic model of individual circadian mobility rhythms and dwell-time distributions without conventional surveys, providing foundations for `motifs.py`.
 
 - **Pappalardo, L., Pedreschi, D., Smoreda, Z., & Giannotti, F. (2015).** "Using big data to study the link between human mobility and socio-economic status."
   *Journal of The Royal Society Interface*, 12(113), 20150597.
@@ -163,6 +169,20 @@ Methodological foundations, academic literature, and research publications suppo
   - **Public Link (DOI)**: https://doi.org/10.1049/iet-its.2010.0154
   - **Pipeline Context**: Cellular signal oscillation and ping-pong handover suppression techniques for vehicular and pedestrian tracking.
 
+### 4. Relational Networks, Social Capital & Activity-Based Demand
+
+- **Eagle, N., Macy, M., & Claxton, R. (2010).** "Network diversity and economic development."
+  *Science*, 328(5981), 1029–1031.
+  - **Status**: Q1 (Multidisciplinary Sciences; Nature/Science flagship)
+  - **Public Link (DOI)**: https://doi.org/10.1126/science.1186605
+  - **Pipeline Context**: Empirical evidence that social network structural diversity and communication entropy directly correlate with socio-economic welfare, implemented in `graph_features.py`.
+
+- **Onnela, J.-P., Saramäki, J., Hyvönen, J., et al. (2007).** "Structure and tie strengths in mobile communication networks."
+  *Proceedings of the National Academy of Sciences (PNAS)*, 104(18), 7332–7336.
+  - **Status**: Q1 (Multidisciplinary Sciences)
+  - **Public Link (DOI)**: https://doi.org/10.1073/pnas.0610245104
+  - **Pipeline Context**: Granovetter tie-strength formulation in mobile communication graphs utilized in `graph_features.py`.
+
 - **Dong, Y., Yang, Y., Tang, J., Yang, Y., & Chawla, N. V. (2014).** "Inferring user demographics and social strategies in mobile social networks."
   *Proceedings of the 20th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining (KDD '14)*, 771–780.
   - **Status**: Top-Tier Flagship (Core A*)
@@ -170,7 +190,19 @@ Methodological foundations, academic literature, and research publications suppo
   - **Open Access (arXiv)**: https://arxiv.org/abs/1406.1417
   - **Pipeline Context**: Graph-based social homophily and network neighbor features for age, gender, and socio-economic prediction.
 
-### 4. Probability Calibration & Imbalanced Class Learning
+- **Bassolas, A., Ramasco, J. J., Herranz, R., & Cantú-Ros, O. G. (2019).** "Mobile phone records to feed activity-based travel demand models: MATSim for studying a cordon toll policy in Barcelona."
+  *Transportation Research Part A: Policy and Practice*, 121, 56–74.
+  - **Status**: Q1 (Transportation Policy & Planning)
+  - **Public Link (DOI)**: https://doi.org/10.1016/j.tra.2019.01.007
+  - **Pipeline Context**: Foundational framework for reconstructing individual 24-hour activity-travel diaries from mobile phone records to feed MATSim agent-based simulations, implemented in `matsim_plans.py`.
+
+### 5. Multi-Target Classifier Chains & Probability Calibration
+
+- **Read, J., Pfahringer, B., Holmes, G., & Frank, E. (2011).** "Classifier chains for multi-label classification."
+  *Machine Learning*, 85(3), 333–359.
+  - **Status**: Q1 (Artificial Intelligence & Machine Learning)
+  - **Public Link (DOI)**: https://doi.org/10.1007/s10994-011-5256-5
+  - **Pipeline Context**: Mathematical formulation for structured classifier chains implemented in `train.py`, conditioning downstream predictions on out-of-fold parent predictions along the demographic DAG.
 
 - **Niculescu-Mizil, A., & Caruana, R. (2005).** "Predicting good probabilities with supervised learning."
   *Proceedings of the 22nd International Conference on Machine Learning (ICML '05)*, 625–632.

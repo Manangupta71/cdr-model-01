@@ -20,6 +20,7 @@ Protocol:
     label and probability vector for each subscriber.
 """
 
+import os
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
@@ -113,14 +114,55 @@ def _fit_calibrated_catboost(X_train, y_train, n_classes):
         return base_model
 
 
-def train_and_evaluate(features_df, population_df, target_col, n_folds=N_FOLDS):
-    df = features_df.merge(population_df[["phone_number", target_col]], on="phone_number")
-    feature_cols = [c for c in features_df.columns if c != "phone_number"]
+DEPENDENCY_GRAPH = {
+    "age_group": [],
+    "gender": [],
+    "education_level": ["age_group"],
+    "occupation_category": ["age_group", "education_level"],
+    "work_status": ["age_group", "occupation_category"],
+    "income_bracket": ["education_level", "occupation_category"],
+    "socio_demographic_class": ["education_level", "income_bracket"],
+}
+
+
+def _get_chain_features(features_df, prior_preds, target_col):
+    """
+    Appends out-of-fold predictions from parent demographic variables to the
+    feature matrix along the Bayesian dependency DAG (Sun & Erath, 2015; Read et al., 2011).
+    """
+    parents = DEPENDENCY_GRAPH.get(target_col, [])
+    if not parents:
+        return features_df
+
+    extra_dfs = []
+    for p in parents:
+        if p in prior_preds:
+            p_df = prior_preds[p]
+            prob_cols = [c for c in p_df.columns if c.startswith(f"prob_{p}__")]
+            extra_dfs.append(p_df[["phone_number"] + prob_cols])
+
+    if not extra_dfs:
+        return features_df
+
+    chained = features_df.copy()
+    for extra in extra_dfs:
+        chained = chained.merge(extra, on="phone_number")
+    return chained
+
+
+def train_and_evaluate(features_df, population_df, target_col, prior_preds=None, n_folds=N_FOLDS):
+    """
+    5-fold stratified cross-validation with conditional chaining and Platt calibration.
+    """
+    prior_preds = prior_preds or {}
+    chained_features = _get_chain_features(features_df, prior_preds, target_col)
+
+    df = chained_features.merge(population_df[["phone_number", target_col]], on="phone_number")
+    feature_cols = [c for c in chained_features.columns if c != "phone_number"]
 
     X_raw = df[feature_cols].fillna(0.0).to_numpy()
     y_raw = df[target_col].to_numpy()
 
-    # Prune near-zero-variance redundant columns
     selector = VarianceThreshold(threshold=1e-5)
     X = selector.fit_transform(X_raw)
 
@@ -132,6 +174,8 @@ def train_and_evaluate(features_df, population_df, target_col, n_folds=N_FOLDS):
     fold_macro_f1, fold_weighted_f1 = [], []
     all_true, all_pred = [], []
 
+    oof_proba = np.zeros((len(df), n_classes))
+
     for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y)):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
@@ -139,6 +183,7 @@ def train_and_evaluate(features_df, population_df, target_col, n_folds=N_FOLDS):
         model = _fit_calibrated_catboost(X_train, y_train, n_classes)
 
         proba = model.predict_proba(X_test)
+        oof_proba[test_idx] = proba
         y_pred = np.argmax(proba, axis=1)
 
         macro_f1 = f1_score(y_test, y_pred, average="macro", zero_division=0)
@@ -155,6 +200,11 @@ def train_and_evaluate(features_df, population_df, target_col, n_folds=N_FOLDS):
         all_true, all_pred, target_names=le.classes_.astype(str), zero_division=0
     )
 
+    # Build out-of-fold prediction dataframe for downstream chain dependency conditioning
+    oof_df = pd.DataFrame({"phone_number": df["phone_number"].to_numpy()})
+    for i, cls in enumerate(le.classes_):
+        oof_df[f"prob_{target_col}__{cls}"] = oof_proba[:, i]
+
     return {
         "target": target_col,
         "macro_f1_mean": float(np.mean(fold_macro_f1)),
@@ -163,19 +213,21 @@ def train_and_evaluate(features_df, population_df, target_col, n_folds=N_FOLDS):
         "weighted_f1_std": float(np.std(fold_weighted_f1)),
         "is_known_artifact": target_col in ARTIFACT_TARGETS,
         "classification_report": report,
+        "oof_df": oof_df,
     }
 
 
-def train_final_model_and_predict(features_df, population_df, target_col):
+def train_final_model_and_predict(features_df, population_df, target_col, prior_final_preds=None):
     """
-    Fits one final calibrated model per target on all agents and returns
-    predicted classes and class probabilities formatted for synthetic
-    population generation.
+    Fits one final calibrated model per target conditioned on prior chain predictions.
     """
-    df = features_df.merge(population_df[["phone_number", target_col]], on="phone_number")
-    feature_cols = [c for c in features_df.columns if c != "phone_number"]
+    prior_final_preds = prior_final_preds or {}
+    chained_features = _get_chain_features(features_df, prior_final_preds, target_col)
 
-    X_all_raw = features_df[feature_cols].fillna(0.0).to_numpy()
+    df = chained_features.merge(population_df[["phone_number", target_col]], on="phone_number")
+    feature_cols = [c for c in chained_features.columns if c != "phone_number"]
+
+    X_all_raw = chained_features[feature_cols].fillna(0.0).to_numpy()
     X_train_raw = df[feature_cols].fillna(0.0).to_numpy()
     y_raw = df[target_col].to_numpy()
 
@@ -193,35 +245,53 @@ def train_final_model_and_predict(features_df, population_df, target_col):
     pred_idx = np.argmax(proba, axis=1)
     pred_labels = le.inverse_transform(pred_idx)
 
-    out = pd.DataFrame({"phone_number": features_df["phone_number"].to_numpy()})
+    out = pd.DataFrame({"phone_number": chained_features["phone_number"].to_numpy()})
     out[f"predicted_{target_col}"] = pred_labels
     for i, cls in enumerate(le.classes_):
         out[f"prob_{target_col}__{cls}"] = proba[:, i]
     return out
 
 
-def export_for_population_synthesis(features_df, population_df, targets=TARGETS):
+def load_and_merge_all_features(bandicoot_path="output/bandicoot_features.csv",
+                                graph_path="output/graph_features.csv",
+                                motifs_path="output/mobility_motifs.csv"):
     """
-    Fits final models for all targets and combines predictions and class
-    probabilities into a unified synthetic population seed matrix.
+    Loads behavioral indicators and joins relational graph features and daily mobility motifs.
     """
-    merged = pd.DataFrame({"phone_number": features_df["phone_number"].to_numpy()})
-    for target in targets:
-        print(f"Fitting final model for '{target}' (full-data, for population synthesis export)...")
-        target_preds = train_final_model_and_predict(features_df, population_df, target)
-        merged = merged.merge(target_preds, on="phone_number")
-    return merged
+    features = pd.read_csv(bandicoot_path)
+    print(f"Loaded baseline indicators from {bandicoot_path}: {features.shape[1] - 1} features.")
+
+    if os.path.exists(graph_path):
+        graph_df = pd.read_csv(graph_path)
+        features = features.merge(graph_df, on="phone_number", how="left")
+        print(f"Merged relational graph features from {graph_path}: +{graph_df.shape[1] - 1} features.")
+
+    if os.path.exists(motifs_path):
+        motifs_df = pd.read_csv(motifs_path)
+        features = features.merge(motifs_df, on="phone_number", how="left")
+        print(f"Merged mobility motifs from {motifs_path}: +{motifs_df.shape[1] - 1} features.")
+
+    print(f"Total unified feature space: {features.shape[0]} subscribers x {features.shape[1] - 1} indicators.")
+    return features
 
 
 def main():
-    features = pd.read_csv("output/bandicoot_features.csv")
+    features = load_and_merge_all_features()
     population = pd.read_csv("data/population.csv")
 
     results = []
+    prior_oof_preds = {}
+
+    print("\n" + "=" * 65)
+    print("Training Conditional Classifier Chains with Platt Calibration")
+    print("(Sun & Erath, 2015, TR-C; Read et al., 2011, Machine Learning)")
+    print("=" * 65)
+
     for target in TARGETS:
-        print(f"\n=== Cross-validating target: {target} ===")
-        result = train_and_evaluate(features, population, target)
+        print(f"\n=== Cross-validating target: {target} (conditioned on: {DEPENDENCY_GRAPH.get(target, [])}) ===")
+        result = train_and_evaluate(features, population, target, prior_preds=prior_oof_preds)
         results.append(result)
+        prior_oof_preds[target] = result["oof_df"]
 
     summary = pd.DataFrame([
         {
@@ -235,9 +305,9 @@ def main():
     ])
     summary.to_csv("output/results_summary.csv", index=False)
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 65)
     print(summary.to_string(index=False))
-    print("=" * 60)
+    print("=" * 65)
     print("\nNOTE: work_status is conditionally coupled with occupation in the "
           "synthetic generator. See docs/DATA_LINEAGE.md for details.")
 
@@ -247,12 +317,22 @@ def main():
             f.write(r["classification_report"])
             f.write("\n")
 
-    print("\n=== Fitting final models and exporting synthetic population seed data ===")
-    synth_seed = export_for_population_synthesis(features, population)
-    synth_seed.to_csv("output/synthetic_population_seed.csv", index=False)
-    print(f"Exported output/synthetic_population_seed.csv "
-          f"({synth_seed.shape[0]} agents x {synth_seed.shape[1] - 1} prediction/probability columns).")
+    print("\n=== Fitting final chained models and exporting synthetic population seed data ===")
+    prior_final_preds = {}
+    merged = pd.DataFrame({"phone_number": features["phone_number"].to_numpy()})
+
+    for target in TARGETS:
+        print(f"Fitting final chained model for '{target}'...")
+        target_preds = train_final_model_and_predict(features, population, target, prior_final_preds=prior_final_preds)
+        prior_final_preds[target] = target_preds
+        merged = merged.merge(target_preds, on="phone_number")
+
+    synth_seed_path = "output/synthetic_population_seed.csv"
+    merged.to_csv(synth_seed_path, index=False)
+    print(f"Exported {synth_seed_path} "
+          f"({merged.shape[0]} agents x {merged.shape[1] - 1} prediction/probability columns).")
 
 
 if __name__ == "__main__":
     main()
+
