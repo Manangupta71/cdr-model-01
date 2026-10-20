@@ -91,7 +91,23 @@ The pipeline predicts seven socio-demographic dimensions:
 6. `income_bracket` (low, lower_mid, upper_mid, high)
 7. `socio_demographic_class` (NCCS-style socio-economic grades E through A)
 
-> **Methodological Note on `work_status`**: In the synthetic data generator, `work_status` is conditionally coupled with occupation category; cross-validation performance reflects this structural alignment. See `docs/DATA_LINEAGE.md` for full discussion.
+---
+
+## Empirical Evaluation & Graph Feature Ablation
+
+All models are evaluated using 5-fold stratified cross-validation across three distinct random seeds (`42`, `123`, `999`). Results compare the tabular baseline (`bandicoot` indicators + inferred commute anchors + mobility motifs) against models augmented with graph-derived features under a strict zero-leakage protocol:
+
+| Target Variable | Baseline Macro-F1 | Baseline + All Graphs Macro-F1 | $\Delta$ Macro-F1 | Finding / Status |
+|---|---|---|---|---|
+| `age_group` | 0.3093 ± 0.0085 | **0.3522 ± 0.0070** | **+0.0430 (+13.9%)** | Substantial improvement from peer network homophily |
+| `education_level` | 0.3048 ± 0.0052 | **0.3186 ± 0.0103** | **+0.0139 (+4.6%)** | Positive gain across random seeds |
+| `income_bracket` | 0.8451 ± 0.0065 | **0.8462 ± 0.0050** | **+0.0011** | High baseline driven by recharge expenditure profiles |
+| `occupation_category` | 0.4421 ± 0.0134 | 0.4297 ± 0.0099 | -0.0124 | Best single graph: Mobility k-NN (0.4465 ± 0.0135) |
+| `socio_demographic_class` | 0.3937 ± 0.0022 | 0.3837 ± 0.0182 | -0.0100 | Best single graph: Social interaction (0.3846 ± 0.0023) |
+| `gender` | 0.4887 ± 0.0174 | 0.4785 ± 0.0255 | -0.0102 | Stable near-parity |
+| `work_status`* | 0.6704 ± 0.0162 | 0.6643 ± 0.0181 | -0.0061 | *Simulation coupling artifact (see note below) |
+
+> **Methodological Note on `work_status`**: In the synthetic data generator, `work_status` is conditionally coupled with occupation category; cross-validation performance reflects this structural alignment. It is tracked separately and not presented as an algorithmic win. See `docs/DATA_LINEAGE.md`.
 
 ---
 

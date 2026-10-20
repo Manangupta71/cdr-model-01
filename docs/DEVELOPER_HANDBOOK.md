@@ -73,17 +73,26 @@ Extracts the full behavioral indicator schema modeled after the `bandicoot` stan
 
 ### `graph_features.py`
 
-Extracts relational communication network topology and physical co-location encounter metrics on anonymized subscriber identifiers:
+Constructs three distinct user graphs from anonymized Call Detail Records and trajectory telemetry, extracting topological metrics and neighbor behavioral feature aggregations:
 
 - **Academic Grounding**:
   - Eagle, N., Macy, M., & Claxton, R. (2010). "Network diversity and economic development." *Science*, 328(5981), 1029–1031. https://doi.org/10.1126/science.1186605
   - Onnela, J.-P. et al. (2007). "Structure and tie strengths in mobile communication networks." *PNAS*, 104(18), 7332–7336. https://doi.org/10.1073/pnas.0610245104
   - Dong, Y. et al. (2014). "Inferring social ties across heterogenous networks." *ACM SIGKDD*, 771–780. https://doi.org/10.1145/2623330.2623703
-- **Network Topologies**:
-  - **Directed Social Graph**: Built from aggregated communication records (`caller_phone` $\to$ `callee_phone`). Computes directed in-degree, out-degree, degree ratio, PageRank centrality, local clustering coefficient, and mutual reciprocity.
-  - **Spatial Co-Location Graph**: Bipartite projection linking anonymized subscribers who simultaneously occupy the same stay points within overlapping temporal intervals ($\le 1$ hour). Computes encounter degree, total physical encounters, and co-location clustering coefficient.
-- **Anonymization Assurance**: All graph projections preserve pseudonymous subscriber IDs without requiring any unmasked PII.
-- **Output**: Generates `output/graph_features.csv` (11 graph indicators per subscriber).
+  - Blumenstock, J., Cadamuro, G., & On, R. (2015). "Predicting poverty and wealth from mobile phone metadata." *Science*, 350(6264), 1073–1077. https://doi.org/10.1126/science.aac4420
+- **The Three User Graphs**:
+  1. **Social Interaction Graph ($G_{\text{social}}$)**: Built from aggregated telecommunication logs (`caller_id` $\to$ `callee_id`). Extracts in/out degree, weighted strength, PageRank centrality, local clustering coefficient, and mutual reciprocity.
+  2. **Spatial Co-Location Graph ($G_{\text{colocation}}$)**: Links subscribers who simultaneously occupy the same spatial grid cells ($\le 300\text{ m}$) within overlapping temporal windows ($\le 1\text{ hour}$) using stay points. Computes encounter degree, encounter strength, and clustering coefficient.
+  3. **Mobility Similarity Graph ($G_{\text{mobility}}$)**: Built via $k$-Nearest Neighbors ($k=5$) over normalized spatial and mobility indicators (commute distance, radius of gyration, location entropy). Computes degree, similarity strength, and local clustering coefficient.
+- **Neighbor Behavioral Feature Aggregation (Zero-Leakage Protocol)**:
+  - For each graph, computes the mean and standard deviation of peer neighbors across 5 continuous behavioral indicators:
+    - `commute_distance_m`
+    - `entropy_of_places`
+    - `radius_of_gyration__allweek__allday`
+    - `number_of_interactions__allweek__allday__call`
+    - `amount_recharges__allweek__allday__mean`
+  - **Strict Zero-Leakage Guarantee**: Under no circumstances are demographic labels used as features. During cross-validation, the mobility $k$-NN index is fit strictly on training fold nodes via `MobilityKNNGraphBuilder`.
+- **Output**: Generates `output/graph_features.csv` (45 graph indicators per subscriber).
 
 ---
 
@@ -112,21 +121,30 @@ Extracts daily individual mobility motifs, tour entropy, and commute regularity:
 
 ### `train.py`
 
-Implements multi-target **Conditional Classifier Chains** along the demographic dependency DAG with Platt probability calibration:
+Trains CatBoost classifiers across seven socio-demographic targets, evaluates systematic feature ablations, and performs multi-seed validation:
 
 - **Academic Grounding**:
   - Read, J. et al. (2011). "Classifier chains for multi-label classification." *Machine Learning*, 85(3), 333–359. https://doi.org/10.1007/s10994-011-5256-5
   - Niculescu-Mizil, A., & Caruana, R. (2005). "Predicting good probabilities with supervised learning." *ICML '05*. https://doi.org/10.1145/1102351.1102430
   - He, H., & Garcia, E. A. (2009). "Learning from imbalanced data." *IEEE TKDE*, 21(9), 1263–1284. https://doi.org/10.1109/TKDE.2008.239
-- **Unified Feature Space**: Merges baseline `bandicoot_features.csv`, relational `graph_features.csv`, and `mobility_motifs.csv`.
-- **Bayesian Dependency DAG**:
+- **Ablation Architecture**:
+  Evaluates 5 feature configurations on identical 5-fold stratified cross-validation splits across multiple random seeds (default: seeds 42, 123, 999):
+  1. `baseline`: Tabular Bandicoot indicators + commute anchors + mobility motifs
+  2. `baseline+mobility`: Baseline + Mobility Similarity Graph ($k$-NN)
+  3. `baseline+colocation`: Baseline + Co-location Graph
+  4. `baseline+social`: Baseline + Social Interaction Graph
+  5. `baseline+all_graphs`: Baseline + All Three User Graphs
+- **Bayesian Dependency DAG & Out-of-Fold Chaining**:
   - Targets are chained sequentially: $\text{Age} \to \text{Gender} \to \text{Education} \to \text{Occupation} \to \text{Work Status} \to \text{Income} \to \text{Socio-Demographic Class}$.
-  - During 5-fold cross-validation, out-of-fold predicted class probability vectors from parent models are injected as conditioning features for downstream targets, preventing target leakage while enforcing inter-attribute joint consistency.
-- **SMOTE & Sigmoid Calibration**:
+  - Out-of-fold predicted class probability vectors from parent models are injected as conditioning features for downstream targets, preventing target leakage while enforcing inter-attribute joint consistency.
+- **SMOTE & Platt Probability Calibration**:
   - SMOTE balances training fold distributions.
-  - Platt scaling (`CalibratedClassifierCV(method="sigmoid", cv="prefit")`) fit on un-resampled holdouts corrects distorted posteriors to true empirical priors.
-- **Collinearity Pruning**: `VarianceThreshold(threshold=1e-5)` removes zero-variance features before tree construction.
-- **Outputs**: Generates `output/results_summary.csv`, `output/classification_reports.txt`, and `output/predictions.csv`.
+  - Platt scaling (`CalibratedClassifierCV(method="sigmoid", cv="prefit")`) fit on un-resampled holdouts corrects distorted posteriors to true empirical priors. Both uncalibrated and calibrated Macro-F1 and Brier scores are tracked.
+- **Outputs**:
+  - `output/predictions.csv`: Production predictions with point labels and full calibrated posterior probability distributions per subscriber.
+  - `output/ablation_summary.csv`: Macro-F1 mean, fold std, seed spread, and Brier scores across all ablation variants.
+  - `output/results_summary.csv`: Head-to-head comparison of baseline vs. all-graphs models.
+  - `output/classification_reports.txt`: Detailed per-class precision, recall, and F1 reports.
 
 ---
 

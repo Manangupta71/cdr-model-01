@@ -1,35 +1,44 @@
 """
 train.py
 
-Trains and evaluates CatBoost classifiers for seven socio-demographic
-targets from the bandicoot-style feature table (bandicoot_features.csv),
-executing 5-fold stratified cross-validation with SMOTE oversampling,
-followed by full-dataset model training and export of final
-socio-demographic predictions with calibrated probability distributions.
+Trains and evaluates CatBoost classifiers for seven socio-demographic targets
+using behavioral indicators and graph-derived relational features. Evaluates
+systematic feature ablations across multiple seeds to test whether graph features
+improve prediction over baseline tabular bandicoot indicators.
 
 Targets:
   age_group, gender, education_level, occupation_category, work_status,
   income_bracket, socio_demographic_class
 
-Protocol:
-  - 5-fold stratified cross-validation per target for performance estimation.
+Ablation Variants:
+  1. baseline: Bandicoot indicators + commute features + mobility motifs
+  2. baseline+mobility: Baseline + Mobility Similarity Graph (k-NN)
+  3. baseline+colocation: Baseline + Co-location Graph
+  4. baseline+social: Baseline + Social Interaction Graph
+  5. baseline+all_graphs: Baseline + All Three User Graphs
+
+Leakage Prevention Protocol:
+  - 5-fold stratified cross-validation per target.
   - SMOTE oversampling applied per fold, fit exclusively on the training split.
-  - CatBoostClassifier with early stopping on an internal validation split.
-  - Final model per target fit on all available data to predict the class
-    label and probability vector for each subscriber.
+  - Mobility k-NN graph is fitted dynamically within each CV fold on the training split.
+  - Platt probability calibration fit on un-resampled training holdouts.
+  - Conditional classifier chains along demographic DAG pass out-of-fold probabilities.
+  - Zero neighbor target labels are used as features; only behavioral feature aggregates.
 """
 
 import os
+import argparse
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import f1_score, classification_report
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.feature_selection import VarianceThreshold
 from imblearn.over_sampling import SMOTE
 from catboost import CatBoostClassifier
 
-RANDOM_STATE = 42
-N_FOLDS = 5
+from graph_features import MobilityKNNGraphBuilder
 
 TARGETS = [
     "age_group",
@@ -44,75 +53,6 @@ TARGETS = [
 # Simulation-coupled targets evaluated with explicit data lineage context.
 ARTIFACT_TARGETS = {"work_status"}
 
-
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.feature_selection import VarianceThreshold
-
-def _min_class_count(y):
-    _, counts = np.unique(y, return_counts=True)
-    return counts.min()
-
-
-def _smote_resample(X_train, y_train):
-    min_count = _min_class_count(y_train)
-    if min_count <= 1:
-        return X_train, y_train
-    k_neighbors = max(1, min(5, min_count - 1))
-    smote = SMOTE(random_state=RANDOM_STATE, k_neighbors=k_neighbors)
-    return smote.fit_resample(X_train, y_train)
-
-
-def _fit_calibrated_catboost(X_train, y_train, n_classes):
-    """
-    Fits a CatBoostClassifier with SMOTE oversampling and post-hoc Platt scaling
-    (sigmoid calibration) on an un-resampled holdout split.
-
-    References:
-      - Niculescu-Mizil, A., & Caruana, R. (2005).
-        "Predicting good probabilities with supervised learning." ICML '05.
-        https://doi.org/10.1145/1102351.1102430
-      - Guo, C., Pleiss, G., Sun, Y., & Weinberger, K. Q. (2017).
-        "On calibration of modern neural networks." ICML '17.
-        https://arxiv.org/abs/1706.04599
-      - He, H., & Garcia, E. A. (2009).
-        "Learning from imbalanced data." IEEE Trans. Knowl. Data Eng., 21(9), 1263-1284.
-        https://doi.org/10.1109/TKDE.2008.239
-        (Addresses empirical prior distortion caused by synthetic oversampling).
-    """
-    n_total = len(X_train)
-    n_cal = max(10, int(0.15 * n_total))
-
-    # Keep an un-resampled calibration validation set to restore natural empirical priors
-    if n_total - n_cal >= 10:
-        X_tr_raw, y_tr_raw = X_train[:-n_cal], y_train[:-n_cal]
-        X_cal, y_cal = X_train[-n_cal:], y_train[-n_cal:]
-    else:
-        X_tr_raw, y_tr_raw = X_train, y_train
-        X_cal, y_cal = X_train, y_train
-
-    X_tr_res, y_tr_res = _smote_resample(X_tr_raw, y_tr_raw)
-
-    base_model = CatBoostClassifier(
-        iterations=200,
-        depth=6,
-        learning_rate=0.08,
-        loss_function="MultiClass" if n_classes > 2 else "Logloss",
-        random_seed=RANDOM_STATE,
-        verbose=False,
-        early_stopping_rounds=20,
-        thread_count=-1,
-    )
-    base_model.fit(X_tr_res, y_tr_res)
-
-    # Calibrate probabilities against the un-resampled calibration set
-    try:
-        calibrator = CalibratedClassifierCV(estimator=base_model, method="sigmoid", cv="prefit")
-        calibrator.fit(X_cal, y_cal)
-        return calibrator
-    except Exception:
-        return base_model
-
-
 DEPENDENCY_GRAPH = {
     "age_group": [],
     "gender": [],
@@ -124,10 +64,71 @@ DEPENDENCY_GRAPH = {
 }
 
 
+def _min_class_count(y):
+    _, counts = np.unique(y, return_counts=True)
+    return counts.min()
+
+
+def _smote_resample(X_train, y_train, random_state=42):
+    min_count = _min_class_count(y_train)
+    if min_count <= 1:
+        return X_train, y_train
+    k_neighbors = max(1, min(5, min_count - 1))
+    smote = SMOTE(random_state=random_state, k_neighbors=k_neighbors)
+    return smote.fit_resample(X_train, y_train)
+
+
+def _compute_brier_score(y_true, proba):
+    """Computes multi-class Brier score: mean squared difference from one-hot target."""
+    n_classes = proba.shape[1]
+    y_onehot = np.eye(n_classes)[y_true]
+    return float(np.mean(np.sum((proba - y_onehot) ** 2, axis=1)))
+
+
+def _fit_catboost_models(X_train, y_train, n_classes, random_state=42):
+    """
+    Fits CatBoostClassifier with SMOTE oversampling on training split.
+    Returns both uncalibrated model and Platt-calibrated model fit on
+    an un-resampled training holdout split.
+    """
+    n_total = len(X_train)
+    n_cal = max(10, int(0.15 * n_total))
+
+    if n_total - n_cal >= 10:
+        X_tr_raw, y_tr_raw = X_train[:-n_cal], y_train[:-n_cal]
+        X_cal, y_cal = X_train[-n_cal:], y_train[-n_cal:]
+    else:
+        X_tr_raw, y_tr_raw = X_train, y_train
+        X_cal, y_cal = X_train, y_train
+
+    X_tr_res, y_tr_res = _smote_resample(X_tr_raw, y_tr_raw, random_state=random_state)
+
+    base_model = CatBoostClassifier(
+        iterations=80,
+        depth=6,
+        learning_rate=0.08,
+        loss_function="MultiClass" if n_classes > 2 else "Logloss",
+        random_seed=random_state,
+        verbose=False,
+        early_stopping_rounds=15,
+        thread_count=-1,
+    )
+    base_model.fit(X_tr_res, y_tr_res)
+
+    # Platt calibration (sigmoid scaling on un-resampled validation holdout)
+    try:
+        calibrator = CalibratedClassifierCV(estimator=base_model, method="sigmoid", cv="prefit")
+        calibrator.fit(X_cal, y_cal)
+    except Exception:
+        calibrator = base_model
+
+    return base_model, calibrator
+
+
 def _get_chain_features(features_df, prior_preds, target_col):
     """
-    Appends out-of-fold predictions from parent demographic variables to the
-    feature matrix along the Bayesian dependency DAG (Sun & Erath, 2015; Read et al., 2011).
+    Appends out-of-fold probability vectors from parent demographic variables
+    along the demographic dependency DAG.
     """
     parents = DEPENDENCY_GRAPH.get(target_col, [])
     if not parents:
@@ -149,189 +150,344 @@ def _get_chain_features(features_df, prior_preds, target_col):
     return chained
 
 
-def train_and_evaluate(features_df, population_df, target_col, prior_preds=None, n_folds=N_FOLDS):
+def evaluate_target_cv(features_df, population_df, target_col, prior_preds=None,
+                       n_folds=5, random_state=42, use_dynamic_knn=False):
     """
-    5-fold stratified cross-validation with conditional chaining and Platt calibration.
+    Evaluates 5-fold stratified cross-validation for a given target.
+    Returns metrics both with and without Platt calibration, plus OOF predictions.
     """
     prior_preds = prior_preds or {}
-    chained_features = _get_chain_features(features_df, prior_preds, target_col)
+    chained = _get_chain_features(features_df, prior_preds, target_col)
 
-    df = chained_features.merge(population_df[["phone_number", target_col]], on="phone_number")
-    feature_cols = [c for c in chained_features.columns if c != "phone_number"]
-
-    X_raw = df[feature_cols].fillna(0.0).to_numpy()
-    y_raw = df[target_col].to_numpy()
-
-    selector = VarianceThreshold(threshold=1e-5)
-    X = selector.fit_transform(X_raw)
-
+    df = chained.merge(population_df[["phone_number", target_col]], on="phone_number")
     le = LabelEncoder()
-    y = le.fit_transform(y_raw)
+    y = le.fit_transform(df[target_col].to_numpy())
     n_classes = len(le.classes_)
 
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=RANDOM_STATE)
-    fold_macro_f1, fold_weighted_f1 = [], []
-    all_true, all_pred = [], []
+    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
 
-    oof_proba = np.zeros((len(df), n_classes))
+    oof_proba_uncal = np.zeros((len(df), n_classes))
+    oof_proba_cal = np.zeros((len(df), n_classes))
 
-    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y)):
-        X_train, X_test = X[train_idx], X[test_idx]
-        y_train, y_test = y[train_idx], y[test_idx]
+    macro_f1_uncal, macro_f1_cal = [], []
+    weighted_f1_uncal, weighted_f1_cal = [], []
 
-        model = _fit_calibrated_catboost(X_train, y_train, n_classes)
+    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(df, y)):
+        train_df = df.iloc[train_idx].copy()
+        test_df = df.iloc[test_idx].copy()
 
-        proba = model.predict_proba(X_test)
-        oof_proba[test_idx] = proba
-        y_pred = np.argmax(proba, axis=1)
+        # If dynamic mobility k-NN is enabled, fit k-NN strictly on training fold
+        if use_dynamic_knn:
+            knn_builder = MobilityKNNGraphBuilder(k=5)
+            knn_builder.fit(train_df)
+            mob_tr = knn_builder.transform(train_df, is_train=True)
+            mob_te = knn_builder.transform(test_df, is_train=False)
 
-        macro_f1 = f1_score(y_test, y_pred, average="macro", zero_division=0)
-        weighted_f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
-        fold_macro_f1.append(macro_f1)
-        fold_weighted_f1.append(weighted_f1)
-        all_true.extend(y_test.tolist())
-        all_pred.extend(y_pred.tolist())
+            train_df = train_df.merge(mob_tr, on="phone_number")
+            test_df = test_df.merge(mob_te, on="phone_number")
 
-        print(f"  [{target_col}] fold {fold_idx + 1}/{n_folds}: "
-              f"macro-F1={macro_f1:.3f}, weighted-F1={weighted_f1:.3f}")
+        feature_cols = [c for c in train_df.columns if c not in ("phone_number", target_col)]
+        X_train_raw = train_df[feature_cols].fillna(0.0).to_numpy()
+        X_test_raw = test_df[feature_cols].fillna(0.0).to_numpy()
+        y_train = y[train_idx]
+        y_test = y[test_idx]
 
-    report = classification_report(
-        all_true, all_pred, target_names=le.classes_.astype(str), zero_division=0
-    )
+        selector = VarianceThreshold(threshold=1e-5)
+        X_train = selector.fit_transform(X_train_raw)
+        X_test = selector.transform(X_test_raw)
 
-    # Build out-of-fold prediction dataframe for downstream chain dependency conditioning
+        base_model, calibrator = _fit_catboost_models(X_train, y_train, n_classes, random_state=random_state)
+
+        # Uncalibrated evaluation
+        p_uncal = base_model.predict_proba(X_test)
+        oof_proba_uncal[test_idx] = p_uncal
+        pred_uncal = np.argmax(p_uncal, axis=1)
+        macro_f1_uncal.append(f1_score(y_test, pred_uncal, average="macro", zero_division=0))
+        weighted_f1_uncal.append(f1_score(y_test, pred_uncal, average="weighted", zero_division=0))
+
+        # Calibrated evaluation
+        p_cal = calibrator.predict_proba(X_test)
+        oof_proba_cal[test_idx] = p_cal
+        pred_cal = np.argmax(p_cal, axis=1)
+        macro_f1_cal.append(f1_score(y_test, pred_cal, average="macro", zero_division=0))
+        weighted_f1_cal.append(f1_score(y_test, pred_cal, average="weighted", zero_division=0))
+
+    # Compute Brier scores across OOF predictions
+    uncal_brier = _compute_brier_score(y, oof_proba_uncal)
+    cal_brier = _compute_brier_score(y, oof_proba_cal)
+
+    # Build OOF predictions dataframe using calibrated probabilities for chaining
     oof_df = pd.DataFrame({"phone_number": df["phone_number"].to_numpy()})
     for i, cls in enumerate(le.classes_):
-        oof_df[f"prob_{target_col}__{cls}"] = oof_proba[:, i]
+        oof_df[f"prob_{target_col}__{cls}"] = oof_proba_cal[:, i]
+
+    # Classification report on calibrated OOF predictions
+    y_pred_cal_all = np.argmax(oof_proba_cal, axis=1)
+    report = classification_report(y, y_pred_cal_all, target_names=le.classes_.astype(str), zero_division=0)
 
     return {
         "target": target_col,
-        "macro_f1_mean": float(np.mean(fold_macro_f1)),
-        "macro_f1_std": float(np.std(fold_macro_f1)),
-        "weighted_f1_mean": float(np.mean(fold_weighted_f1)),
-        "weighted_f1_std": float(np.std(fold_weighted_f1)),
+        "uncal_macro_f1_mean": float(np.mean(macro_f1_uncal)),
+        "uncal_macro_f1_std": float(np.std(macro_f1_uncal)),
+        "cal_macro_f1_mean": float(np.mean(macro_f1_cal)),
+        "cal_macro_f1_std": float(np.std(macro_f1_cal)),
+        "uncal_weighted_f1_mean": float(np.mean(weighted_f1_uncal)),
+        "cal_weighted_f1_mean": float(np.mean(weighted_f1_cal)),
+        "uncal_brier_score": uncal_brier,
+        "cal_brier_score": cal_brier,
         "is_known_artifact": target_col in ARTIFACT_TARGETS,
         "classification_report": report,
         "oof_df": oof_df,
     }
 
 
-def train_final_model_and_predict(features_df, population_df, target_col, prior_final_preds=None):
+def train_final_full_model_and_predict(features_df, population_df, target_col,
+                                       prior_final_preds=None, random_state=42,
+                                       use_dynamic_knn=False):
     """
-    Fits one final calibrated model per target conditioned on prior chain predictions.
+    Fits one final model per target on full dataset for final production predictions.
     """
     prior_final_preds = prior_final_preds or {}
-    chained_features = _get_chain_features(features_df, prior_final_preds, target_col)
+    chained = _get_chain_features(features_df, prior_final_preds, target_col)
 
-    df = chained_features.merge(population_df[["phone_number", target_col]], on="phone_number")
-    feature_cols = [c for c in chained_features.columns if c != "phone_number"]
+    df = chained.merge(population_df[["phone_number", target_col]], on="phone_number")
 
-    X_all_raw = chained_features[feature_cols].fillna(0.0).to_numpy()
+    if use_dynamic_knn:
+        knn_builder = MobilityKNNGraphBuilder(k=5)
+        knn_builder.fit(df)
+        mob_full = knn_builder.transform(df, is_train=True)
+        df = df.merge(mob_full, on="phone_number")
+        chained = chained.merge(mob_full, on="phone_number")
+
+    feature_cols = [c for c in df.columns if c not in ("phone_number", target_col)]
     X_train_raw = df[feature_cols].fillna(0.0).to_numpy()
-    y_raw = df[target_col].to_numpy()
+    X_all_raw = chained[feature_cols].fillna(0.0).to_numpy()
 
     selector = VarianceThreshold(threshold=1e-5)
     X_train = selector.fit_transform(X_train_raw)
     X_all = selector.transform(X_all_raw)
 
     le = LabelEncoder()
-    y_train = le.fit_transform(y_raw)
+    y_train = le.fit_transform(df[target_col].to_numpy())
     n_classes = len(le.classes_)
 
-    model = _fit_calibrated_catboost(X_train, y_train, n_classes)
+    _, calibrator = _fit_catboost_models(X_train, y_train, n_classes, random_state=random_state)
 
-    proba = model.predict_proba(X_all)
+    proba = calibrator.predict_proba(X_all)
     pred_idx = np.argmax(proba, axis=1)
     pred_labels = le.inverse_transform(pred_idx)
 
-    out = pd.DataFrame({"phone_number": chained_features["phone_number"].to_numpy()})
+    out = pd.DataFrame({"phone_number": chained["phone_number"].to_numpy()})
     out[f"predicted_{target_col}"] = pred_labels
     for i, cls in enumerate(le.classes_):
         out[f"prob_{target_col}__{cls}"] = proba[:, i]
     return out
 
 
-def load_and_merge_all_features(bandicoot_path="output/bandicoot_features.csv",
-                                graph_path="output/graph_features.csv",
-                                motifs_path="output/mobility_motifs.csv"):
+def load_dataset_features(bandicoot_path="output/bandicoot_features.csv",
+                          graph_path="output/graph_features.csv",
+                          motifs_path="output/mobility_motifs.csv"):
     """
-    Loads behavioral indicators and joins relational graph features and daily mobility motifs.
+    Loads baseline bandicoot table and auxiliary feature sets.
     """
-    features = pd.read_csv(bandicoot_path)
-    print(f"Loaded baseline indicators from {bandicoot_path}: {features.shape[1] - 1} features.")
-
-    if os.path.exists(graph_path):
-        graph_df = pd.read_csv(graph_path)
-        features = features.merge(graph_df, on="phone_number", how="left")
-        print(f"Merged relational graph features from {graph_path}: +{graph_df.shape[1] - 1} features.")
-
+    base_df = pd.read_csv(bandicoot_path)
     if os.path.exists(motifs_path):
         motifs_df = pd.read_csv(motifs_path)
-        features = features.merge(motifs_df, on="phone_number", how="left")
-        print(f"Merged mobility motifs from {motifs_path}: +{motifs_df.shape[1] - 1} features.")
+        base_df = base_df.merge(motifs_df, on="phone_number", how="left")
 
-    print(f"Total unified feature space: {features.shape[0]} subscribers x {features.shape[1] - 1} indicators.")
-    return features
+    graph_df = pd.read_csv(graph_path) if os.path.exists(graph_path) else None
+
+    return base_df, graph_df
+
+
+def assemble_variant_features(base_df, graph_df, variant_name):
+    """
+    Assembles feature dataframe corresponding to the ablation variant.
+    """
+    if variant_name == "baseline" or graph_df is None:
+        return base_df.copy(), False
+
+    df = base_df.copy()
+    use_dynamic_knn = False
+
+    if variant_name == "baseline+social":
+        social_cols = ["phone_number"] + [c for c in graph_df.columns if c.startswith("graph_social__")]
+        df = df.merge(graph_df[social_cols], on="phone_number", how="left")
+    elif variant_name == "baseline+colocation":
+        colo_cols = ["phone_number"] + [c for c in graph_df.columns if c.startswith("graph_colocation__")]
+        df = df.merge(graph_df[colo_cols], on="phone_number", how="left")
+    elif variant_name == "baseline+mobility":
+        # Use dynamic fold-isolated k-NN
+        use_dynamic_knn = True
+    elif variant_name == "baseline+all_graphs":
+        social_and_colo = ["phone_number"] + [c for c in graph_df.columns if c.startswith("graph_social__") or c.startswith("graph_colocation__")]
+        df = df.merge(graph_df[social_and_colo], on="phone_number", how="left")
+        use_dynamic_knn = True
+
+    return df, use_dynamic_knn
+
+
+def run_experiments(seeds=(42, 123, 999), n_folds=5, run_ablation=True):
+    """
+    Executes cross-validation over the ablation suite across multiple seeds,
+    records fold-level std and seed spread, and exports predictions.
+    """
+    base_df, graph_df = load_dataset_features()
+    population = pd.read_csv("data/population.csv")
+
+    variants = [
+        "baseline",
+        "baseline+mobility",
+        "baseline+colocation",
+        "baseline+social",
+        "baseline+all_graphs",
+    ] if run_ablation else ["baseline", "baseline+all_graphs"]
+
+    print("=" * 75)
+    print(f"Running Socio-Demographic Prediction Pipeline Across {len(seeds)} Random Seeds: {seeds}")
+    print(f"Ablation Variants ({len(variants)}): {variants}")
+    print("=" * 75)
+
+    experiment_records = []
+    final_best_reports = {}
+
+    for var in variants:
+        print(f"\n>>> Evaluating Variant: {var} <<<")
+        feat_df, use_dyn_knn = assemble_variant_features(base_df, graph_df, var)
+
+        for seed in seeds:
+            print(f"--- [Seed {seed}] ---")
+            prior_oof = {}
+            for target in TARGETS:
+                res = evaluate_target_cv(
+                    feat_df, population, target,
+                    prior_preds=prior_oof,
+                    n_folds=n_folds,
+                    random_state=seed,
+                    use_dynamic_knn=use_dyn_knn,
+                )
+                prior_oof[target] = res["oof_df"]
+
+                experiment_records.append({
+                    "variant": var,
+                    "seed": seed,
+                    "target": target,
+                    "uncal_macro_f1": res["uncal_macro_f1_mean"],
+                    "cal_macro_f1": res["cal_macro_f1_mean"],
+                    "uncal_weighted_f1": res["uncal_weighted_f1_mean"],
+                    "cal_weighted_f1": res["cal_weighted_f1_mean"],
+                    "uncal_brier": res["uncal_brier_score"],
+                    "cal_brier": res["cal_brier_score"],
+                    "is_known_artifact": res["is_known_artifact"],
+                })
+
+                if var == "baseline+all_graphs" and seed == seeds[0]:
+                    final_best_reports[target] = res["classification_report"]
+
+    exp_df = pd.DataFrame(experiment_records)
+
+    # 1. Ablation Summary Aggregated Across Seeds
+    ablation_summary = (
+        exp_df.groupby(["variant", "target", "is_known_artifact"])
+        .agg(
+            cal_macro_f1_mean=("cal_macro_f1", "mean"),
+            cal_macro_f1_std=("cal_macro_f1", "std"),
+            cal_macro_f1_spread=("cal_macro_f1", lambda s: float(s.max() - s.min())),
+            uncal_macro_f1_mean=("uncal_macro_f1", "mean"),
+            uncal_macro_f1_std=("uncal_macro_f1", "std"),
+            cal_brier_mean=("cal_brier", "mean"),
+            uncal_brier_mean=("uncal_brier", "mean"),
+            cal_weighted_f1_mean=("cal_weighted_f1", "mean"),
+        )
+        .reset_index()
+    )
+    for c in ["cal_macro_f1_mean", "cal_macro_f1_std", "cal_macro_f1_spread",
+              "uncal_macro_f1_mean", "uncal_macro_f1_std", "cal_brier_mean",
+              "uncal_brier_mean", "cal_weighted_f1_mean"]:
+        ablation_summary[c] = ablation_summary[c].fillna(0.0).round(4)
+
+    ablation_summary.to_csv("output/ablation_summary.csv", index=False)
+    print("\nSaved output/ablation_summary.csv")
+
+    # 2. Results Summary comparing Baseline vs Best Graph Variant
+    base_sub = exp_df[exp_df["variant"] == "baseline"].groupby("target").agg(
+        baseline_cal_macro_f1=("cal_macro_f1", "mean"),
+        baseline_cal_macro_f1_std=("cal_macro_f1", "std"),
+        baseline_uncal_brier=("uncal_brier", "mean"),
+        baseline_cal_brier=("cal_brier", "mean"),
+    )
+    all_graph_sub = exp_df[exp_df["variant"] == "baseline+all_graphs"].groupby("target").agg(
+        all_graphs_cal_macro_f1=("cal_macro_f1", "mean"),
+        all_graphs_cal_macro_f1_std=("cal_macro_f1", "std"),
+        all_graphs_uncal_brier=("uncal_brier", "mean"),
+        all_graphs_cal_brier=("cal_brier", "mean"),
+    )
+    results_summary = base_sub.join(all_graph_sub).reset_index()
+    results_summary["delta_f1_from_graphs"] = (
+        results_summary["all_graphs_cal_macro_f1"] - results_summary["baseline_cal_macro_f1"]
+    ).round(4)
+    results_summary["brier_reduction_from_cal"] = (
+        results_summary["all_graphs_uncal_brier"] - results_summary["all_graphs_cal_brier"]
+    ).round(4)
+    results_summary["is_known_artifact"] = results_summary["target"].isin(ARTIFACT_TARGETS)
+
+    for col in results_summary.columns:
+        if any(k in col for k in ["f1", "brier", "delta"]):
+            results_summary[col] = results_summary[col].fillna(0.0).round(4)
+
+    results_summary.to_csv("output/results_summary.csv", index=False)
+    print("Saved output/results_summary.csv")
+
+    # 3. Classification Reports
+    with open("output/classification_reports.txt", "w") as f:
+        f.write("======================================================================\n")
+        f.write("CLASSIFICATION REPORTS PER TARGET (baseline+all_graphs, calibrated)\n")
+        f.write("======================================================================\n\n")
+        for target, rep in final_best_reports.items():
+            f.write(f"\n=== Target: {target} ===\n")
+            f.write(rep)
+            f.write("\n")
+    print("Saved output/classification_reports.txt")
+
+    # 4. Generate Final Production Predictions (predictions.csv)
+    print("\nFitting final production models on full unified dataset...")
+    full_feat_df, use_dyn_knn = assemble_variant_features(base_df, graph_df, "baseline+all_graphs")
+    prior_final_preds = {}
+    merged_preds = pd.DataFrame({"phone_number": full_feat_df["phone_number"].to_numpy()})
+
+    for target in TARGETS:
+        target_pred_df = train_final_full_model_and_predict(
+            full_feat_df, population, target,
+            prior_final_preds=prior_final_preds,
+            random_state=seeds[0],
+            use_dynamic_knn=use_dyn_knn
+        )
+        prior_final_preds[target] = target_pred_df
+        merged_preds = merged_preds.merge(target_pred_df, on="phone_number")
+
+    pred_path = "output/predictions.csv"
+    merged_preds.to_csv(pred_path, index=False)
+    print(f"Exported {pred_path} ({len(merged_preds)} subscribers x {merged_preds.shape[1] - 1} prediction/probability columns).")
+
+    print("\n" + "=" * 75)
+    print("FINAL RESULTS SUMMARY (Baseline vs. Baseline + All Graphs):")
+    print("=" * 75)
+    print(results_summary.to_string(index=False))
+    print("\nNOTE: work_status is conditionally coupled with occupation category in the synthetic")
+    print("generator (see docs/DATA_LINEAGE.md); its high performance reflects this coupling.")
 
 
 def main():
-    features = load_and_merge_all_features()
-    population = pd.read_csv("data/population.csv")
+    parser = argparse.ArgumentParser(description="Train CatBoost models and evaluate graph feature ablations.")
+    parser.add_argument("--seeds", nargs="+", type=int, default=[42, 123, 999],
+                        help="Random seeds for CV stability verification.")
+    parser.add_argument("--n_folds", type=int, default=5, help="Number of CV folds.")
+    parser.add_argument("--quick", action="store_true", help="Run quick single-seed check.")
+    args = parser.parse_args()
 
-    results = []
-    prior_oof_preds = {}
-
-    print("\n" + "=" * 65)
-    print("Training Conditional Classifier Chains with Platt Calibration")
-    print("(Sun & Erath, 2015, TR-C; Read et al., 2011, Machine Learning)")
-    print("=" * 65)
-
-    for target in TARGETS:
-        print(f"\n=== Cross-validating target: {target} (conditioned on: {DEPENDENCY_GRAPH.get(target, [])}) ===")
-        result = train_and_evaluate(features, population, target, prior_preds=prior_oof_preds)
-        results.append(result)
-        prior_oof_preds[target] = result["oof_df"]
-
-    summary = pd.DataFrame([
-        {
-            "target": r["target"],
-            "macro_f1_mean": round(r["macro_f1_mean"], 4),
-            "macro_f1_std": round(r["macro_f1_std"], 4),
-            "weighted_f1_mean": round(r["weighted_f1_mean"], 4),
-            "known_artifact": r["is_known_artifact"],
-        }
-        for r in results
-    ])
-    summary.to_csv("output/results_summary.csv", index=False)
-
-    print("\n" + "=" * 65)
-    print(summary.to_string(index=False))
-    print("=" * 65)
-    print("\nNOTE: work_status is conditionally coupled with occupation in the "
-          "synthetic generator. See docs/DATA_LINEAGE.md for details.")
-
-    with open("output/classification_reports.txt", "w") as f:
-        for r in results:
-            f.write(f"\n=== {r['target']} ===\n")
-            f.write(r["classification_report"])
-            f.write("\n")
-
-    print("\n=== Fitting final chained models and exporting predictions ===")
-    prior_final_preds = {}
-    merged = pd.DataFrame({"phone_number": features["phone_number"].to_numpy()})
-
-    for target in TARGETS:
-        print(f"Fitting final chained model for '{target}'...")
-        target_preds = train_final_model_and_predict(features, population, target, prior_final_preds=prior_final_preds)
-        prior_final_preds[target] = target_preds
-        merged = merged.merge(target_preds, on="phone_number")
-
-    pred_path = "output/predictions.csv"
-    merged.to_csv(pred_path, index=False)
-    print(f"Exported {pred_path} "
-          f"({merged.shape[0]} subscribers x {merged.shape[1] - 1} prediction/probability columns).")
+    seeds = [42] if args.quick else args.seeds
+    run_experiments(seeds=seeds, n_folds=args.n_folds, run_ablation=True)
 
 
 if __name__ == "__main__":
     main()
-
