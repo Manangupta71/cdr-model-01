@@ -4,9 +4,8 @@ train.py
 Trains and evaluates CatBoost classifiers for seven socio-demographic
 targets from the bandicoot-style feature table (bandicoot_features.csv),
 executing 5-fold stratified cross-validation with SMOTE oversampling,
-followed by full-dataset model training and generation of synthetic population
-seed profiles (predicted categories and class probabilities) for travel demand
-modeling (e.g., iterative proportional fitting / IPU).
+followed by full-dataset model training and export of final
+socio-demographic predictions with calibrated probability distributions.
 
 Targets:
   age_group, gender, education_level, occupation_category, work_status,
@@ -317,7 +316,7 @@ def main():
             f.write(r["classification_report"])
             f.write("\n")
 
-    print("\n=== Fitting final chained models and exporting synthetic population seed data ===")
+    print("\n=== Fitting final chained models and exporting predictions ===")
     prior_final_preds = {}
     merged = pd.DataFrame({"phone_number": features["phone_number"].to_numpy()})
 
@@ -327,10 +326,10 @@ def main():
         prior_final_preds[target] = target_preds
         merged = merged.merge(target_preds, on="phone_number")
 
-    synth_seed_path = "output/synthetic_population_seed.csv"
-    merged.to_csv(synth_seed_path, index=False)
-    print(f"Exported {synth_seed_path} "
-          f"({merged.shape[0]} agents x {merged.shape[1] - 1} prediction/probability columns).")
+    pred_path = "output/predictions.csv"
+    merged.to_csv(pred_path, index=False)
+    print(f"Exported {pred_path} "
+          f"({merged.shape[0]} subscribers x {merged.shape[1] - 1} prediction/probability columns).")
 
 
 if __name__ == "__main__":

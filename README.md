@@ -1,6 +1,6 @@
-# CDR-Based Socio-Demographic Prediction for Synthetic Population Generation
+# CDR-Based Socio-Demographic Prediction Pipeline
 
-A computational pipeline that simulates realistic Call Detail Record (CDR) data for an urban population (Bengaluru), extracts the standard `bandicoot` behavioral-indicator feature set, and trains machine learning models to predict individual socio-demographic attributes — producing structured seed profiles for **synthetic population generation** in travel demand modeling.
+A computational pipeline that simulates realistic Call Detail Record (CDR) data for an urban population (Bengaluru), extracts the standard `bandicoot` behavioral-indicator feature set, engineers graph-derived relational features, and trains machine learning models to predict individual socio-demographic attributes.
 
 > **Project Context**: Developed as part of the Summer Research Fellowship Programme (SRFP) at the Indian Institute of Technology Bombay (IIT Bombay), Department of Civil Engineering (Transportation Systems Engineering), under the guidance of Dr. Archak Mittal.
 
@@ -8,7 +8,7 @@ A computational pipeline that simulates realistic Call Detail Record (CDR) data 
 
 ## Pipeline Architecture
 
-The pipeline models the complete path from raw telecommunications telemetry to calibrated population synthesis seeds, expanded synthetic agents, and microscopic activity travel plans:
+The pipeline models the complete path from raw telecommunications telemetry to calibrated socio-demographic predictions:
 
 ```
 generate_bengaluru_data.py  → Raw CDR telemetry (voice calls, SMS, spatial pings,
@@ -19,16 +19,12 @@ stay_points.py              → Spatial-temporal stay point extraction (Toole et
 label_places.py             → Meaningful place inference (Home / Work / Other anchors)
 bandicoot_features.py       → Behavioral indicator extraction consuming inferred anchors
                               (Alexander et al., 2015; de Montjoye et al., 2016)
-graph_features.py           → Communication network topology & spatial co-location encounters
+graph_features.py           → Relational network topology & neighbor feature aggregates
                               (Eagle et al., 2010; Onnela et al., 2007; Dong et al., 2014)
 motifs.py                   → Daily human mobility motifs, entropy, & commute regularity
                               (Schneider et al., 2013; Jiang et al., 2016)
-train.py                    → Conditional Classifier Chains along demographic DAG with Platt calibration
-                              (Sun & Erath, 2015; Read et al., 2011; Niculescu-Mizil & Caruana, 2005)
-ipu.py                      → Downstream Iterative Proportional Updating (IPU) expanding
-                              seed profiles to zonal census totals (Ye et al., 2009)
-matsim_plans.py             → 24-hr activity travel diaries & valid MATSim plans.xml
-                              (Bassolas et al., 2019; Axhausen & Horni, 2016)
+train.py                    → 5-fold Stratified CV, SMOTE, CatBoost classifiers, and
+                              probability calibration across 7 socio-demographic targets
 ```
 
 ---
@@ -43,7 +39,7 @@ pip install -r requirements.txt
 
 ### 2. Pipeline Execution
 
-Run the pipeline sequentially from raw data simulation to final expanded population synthesis and MATSim activity plans:
+Run the pipeline sequentially from raw data simulation to model evaluation and prediction:
 
 ```bash
 # 1. Generate synthetic CDR telemetry (default n=500, configurable)
@@ -70,23 +66,16 @@ python graph_features.py                          # -> output/graph_features.csv
 # 7. Extract daily mobility motifs & tour regularity
 python motifs.py                                  # -> output/mobility_motifs.csv
 
-# 8. Train calibrated classifier chains & export synthetic population seed
-python train.py                                   # -> output/results_summary.csv,
-                                                   #    output/classification_reports.txt,
-                                                   #    output/synthetic_population_seed.csv
-
-# 9. Expand population seeds to zonal census marginal controls via IPU
-python ipu.py                                     # -> output/synthetic_population_final.csv,
-                                                   #    output/ipu_validation_metrics.csv
-
-# 10. Generate agent-based 24-hr activity diaries and MATSim plans.xml
-python matsim_plans.py                            # -> output/activity_travel_diaries.csv,
-                                                   #    output/plans.xml
+# 8. Train models, evaluate feature ablations & export predictions
+python train.py                                   # -> output/predictions.csv,
+                                                   #    output/results_summary.csv,
+                                                   #    output/ablation_summary.csv,
+                                                   #    output/classification_reports.txt
 ```
 
 Each stage automatically loads its corresponding input from `data/` and `output/`. The pipeline strictly preserves **anonymized subscriber IDs** across every module without assuming unmasked PII.
 
-> **Execution Note**: `train.py` executes 5-fold stratified cross-validation with per-fold SMOTE oversampling and Platt probability calibration, followed by full-dataset training across all 7 socio-demographic targets. Runtime scales with population size (`N_AGENTS` in `generate_bengaluru_data.py`).
+> **Execution Note**: `train.py` executes 5-fold stratified cross-validation with per-fold SMOTE oversampling and Platt probability calibration across all 7 socio-demographic targets. Runtime scales with population size (`N_AGENTS` in `generate_bengaluru_data.py`).
 
 ---
 
@@ -108,26 +97,26 @@ The pipeline predicts seven socio-demographic dimensions:
 
 ## Output Data Products
 
-### 1. Seed Matrix: `output/synthetic_population_seed.csv`
-Contains one record per `phone_number` with:
+### 1. Subscriber Predictions: `output/predictions.csv`
+Contains one record per subscriber (`phone_number`) with:
 - `predicted_<target>`: Point prediction (most probable category).
-- `prob_<target>__<class>`: Complete calibrated predicted probability distribution over all classes for that target.
+- `prob_<target>__<class>`: Calibrated predicted probability distribution over all classes for that target.
 
-### 2. Expanded Population: `output/synthetic_population_final.csv`
-Contains the seed population enriched with:
-- `sample_weight`: Continuous expansion weight generated via Iterative Proportional Updating (IPU) matching zonal census marginals.
-- `integer_weight`: Discrete replicated agent counts for direct ingestion into agent-based travel demand models.
+### 2. Evaluation & Ablation Summaries: `output/results_summary.csv` & `output/ablation_summary.csv`
+- `output/results_summary.csv`: Target-level performance metrics (Macro-F1, Micro-F1, per-fold standard deviation).
+- `output/ablation_summary.csv`: Comparative evaluation of feature subsets across seeds:
+  - Baseline (Bandicoot + Commute features)
+  - Baseline + Mobility Similarity Graph
+  - Baseline + Co-location Graph
+  - Baseline + Social Interaction Graph
+  - Baseline + All Three Graphs
 
-### 3. IPU Validation: `output/ipu_validation_metrics.csv`
-Contains convergence metrics, target vs. fitted marginal controls, Standardized Root Mean Square Error (SRMSE), and Total Absolute Difference (TAD).
+### 3. Detailed Reports: `output/classification_reports.txt`
+Full classification metrics (precision, recall, F1-score, support) for each target and demographic class.
 
 ### 4. Relational & Topological Indicator Tables
-- `output/graph_features.csv`: 11 communication graph centrality (PageRank, degree, reciprocity) and physical co-location encounter metrics.
-- `output/mobility_motifs.csv`: 6 motif indicators (primary motif ID, frequency, Shannon entropy, commute regularity).
-
-### 5. Microscopic Simulation Plans: `output/plans.xml` & `activity_travel_diaries.csv`
-- `output/activity_travel_diaries.csv`: 24-hour sequence of scheduled activities (home, work, education, leisure) with exact departure times and mode choice (`car`, `pt`, `walk`).
-- `output/plans.xml`: W3C valid XML conforming to the MATSim DTD specification (`http://www.matsim.org/files/dtd/plans_v4.dtd`) ready for traffic micro-simulation.
+- `output/graph_features.csv`: Communication network centrality (PageRank, degree, reciprocity) and physical co-location metrics.
+- `output/mobility_motifs.csv`: Daily motif indicators (primary motif ID, frequency, Shannon entropy, commute regularity).
 
 ---
 

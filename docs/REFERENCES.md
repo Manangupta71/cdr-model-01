@@ -66,46 +66,7 @@ Methodological foundations, academic literature, and research publications suppo
 
 ## Curated Q1 Academic Literature (with Public Links)
 
-### 1. Population Synthesis & Joint Socio-Demographic Modeling
-
-- **Sun, L., & Erath, A. (2015).** "A Bayesian network approach for population synthesis."
-  *Transportation Research Part C: Emerging Technologies*, 61, 49–62.
-  - **Status**: Q1 (Transportation & Civil Engineering)
-  - **Public Link (DOI)**: https://doi.org/10.1016/j.trc.2015.10.010
-  - **Open Access (arXiv)**: https://arxiv.org/abs/1507.01886
-  - **Pipeline Context**: Framework for modeling joint multi-attribute dependencies (age, education, occupation, income) using probabilistic graphical models (DAGs) rather than isolated independent classifiers, avoiding logically impossible demographic combinations.
-
-- **Borysov, S. S., Rich, J., & Pereira, F. C. (2019).** "How to generate micro-agents? A deep generative modeling approach to population synthesis."
-  *Transportation Research Part C: Emerging Technologies*, 106, 73–87.
-  - **Status**: Q1 (Transportation & Civil Engineering)
-  - **Public Link (DOI)**: https://doi.org/10.1016/j.trc.2019.07.006
-  - **Open Access (arXiv)**: https://arxiv.org/abs/1903.04942
-  - **Pipeline Context**: Pioneering deep generative modeling (Variational Autoencoders) for synthesizing micro-agents from tabular demographic data while capturing complex non-linear correlations and overcoming sampling zeros.
-
-- **Farooq, B., Bierlaire, M., Hurtubia, R., & Flötteröd, G. (2013).** "Simulation based population synthesis."
-  *Transportation Research Part B: Methodological*, 58, 243–263.
-  - **Status**: Q1 (Transportation Science & Operations Research)
-  - **Public Link (DOI)**: https://doi.org/10.1016/j.trb.2013.09.012
-  - **Open Access (EPFL InfoScience)**: https://infoscience.epfl.ch/record/188448
-  - **Pipeline Context**: Methodological benchmark for drawing heterogeneous individual agents from joint multi-level distributions using Markov Chain Monte Carlo (MCMC) and Gibbs sampling.
-
-- **Hörl, S., & Balać, M. (2021).** "Synthetic population and travel demand for Paris and Île-de-France based on open and public data."
-  *Transportation Research Part C: Emerging Technologies*, 130, 103291.
-  - **Status**: Q1 (Transportation & Civil Engineering)
-  - **Public Link (DOI)**: https://doi.org/10.1016/j.trc.2021.103291
-  - **Open Access (arXiv)**: https://arxiv.org/abs/2009.07186
-  - **Pipeline Context**: Comprehensive open-source pipeline linking synthetic population seeds to agent-based activity-travel diaries in MATSim.
-
-- **Ye, X., Konduri, K., Pendyala, R. M., Sana, B., & Waddell, P. (2009).** "A methodology to match distributions of both household and person attributes in the generation of synthetic populations."
-  *Transportation Research Board 88th Annual Meeting*, Washington, D.C.
-  - **Pipeline Context**: Formulation of the Iterative Proportional Updating (IPU) algorithm implemented in `ipu.py` to match multi-attribute marginal control totals.
-
-- **Müller, K., & Axhausen, K. W. (2011).** "Hierarchical IPM: a new approach to population synthesis."
-  *Transportation Research Record*, 2255(1), 10–18.
-  - **Public Link (DOI)**: https://doi.org/10.3141/2255-02
-  - **Pipeline Context**: Multi-level hierarchical iterative proportional fitting and raking for travel demand generation.
-
-### 2. Telecommunication Metadata for Travel Demand & Demographics
+### 1. Telecommunication Metadata for Mobility & Demographics
 
 - **Bwambale, A., Choudhury, C. F., & Hess, S. (2019).** "Modelling trip generation using mobile phone data: A latent demographics approach."
   *Journal of Transport Geography*, 76, 276–286.
@@ -134,7 +95,7 @@ Methodological foundations, academic literature, and research publications suppo
   - **Open Access (Author PDF)**: http://www.jblumenstock.com/files/papers/Science2015.pdf
   - **Pipeline Context**: Landmark paper establishing how feature engineering from calling graphs, airtime top-ups, and spatial mobility predicts individual socio-economic status.
 
-### 3. Human Mobility Motifs, Trajectory Mining & Telemetry Noise
+### 2. Human Mobility Motifs, Trajectory Mining & Telemetry Noise
 
 - **Schneider, C. M., Belik, V., Couronné, T., Smoreda, Z., & González, M. C. (2013).** "Unravelling daily human mobility motifs."
   *Journal of The Royal Society Interface*, 10(84), 20130246.
@@ -169,7 +130,7 @@ Methodological foundations, academic literature, and research publications suppo
   - **Public Link (DOI)**: https://doi.org/10.1049/iet-its.2010.0154
   - **Pipeline Context**: Cellular signal oscillation and ping-pong handover suppression techniques for vehicular and pedestrian tracking.
 
-### 4. Relational Networks, Social Capital & Activity-Based Demand
+### 3. Relational Networks, Social Capital & Mobility Graphs
 
 - **Eagle, N., Macy, M., & Claxton, R. (2010).** "Network diversity and economic development."
   *Science*, 328(5981), 1029–1031.
@@ -190,13 +151,7 @@ Methodological foundations, academic literature, and research publications suppo
   - **Open Access (arXiv)**: https://arxiv.org/abs/1406.1417
   - **Pipeline Context**: Graph-based social homophily and network neighbor features for age, gender, and socio-economic prediction.
 
-- **Bassolas, A., Ramasco, J. J., Herranz, R., & Cantú-Ros, O. G. (2019).** "Mobile phone records to feed activity-based travel demand models: MATSim for studying a cordon toll policy in Barcelona."
-  *Transportation Research Part A: Policy and Practice*, 121, 56–74.
-  - **Status**: Q1 (Transportation Policy & Planning)
-  - **Public Link (DOI)**: https://doi.org/10.1016/j.tra.2019.01.007
-  - **Pipeline Context**: Foundational framework for reconstructing individual 24-hour activity-travel diaries from mobile phone records to feed MATSim agent-based simulations, implemented in `matsim_plans.py`.
-
-### 5. Multi-Target Classifier Chains & Probability Calibration
+### 4. Multi-Target Classifier Chains & Probability Calibration
 
 - **Read, J., Pfahringer, B., Holmes, G., & Frank, E. (2011).** "Classifier chains for multi-label classification."
   *Machine Learning*, 85(3), 333–359.
@@ -229,8 +184,8 @@ Foundational research publications and course curriculum from the Transportation
    IIT Bombay).
    https://www.civil.iitb.ac.in/~vmtom/1100_LnTse/900_allln/ce_tvm_tse_ln.pdf
    — Classical four-step travel demand modeling (trip generation, trip
-   distribution, modal split, traffic assignment), providing the direct
-   context for synthetic population synthesis.
+   distribution, modal split, traffic assignment), providing the broader
+   transportation planning context.
 
 2. **Mathew, T. V., Joshi, G. J., & Velaga, N. R. (Eds.) (2019).**
    *Transportation Research: Proceedings of CTRG 2017.* Lecture Notes in

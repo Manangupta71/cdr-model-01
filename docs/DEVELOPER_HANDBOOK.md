@@ -116,7 +116,6 @@ Implements multi-target **Conditional Classifier Chains** along the demographic 
 
 - **Academic Grounding**:
   - Read, J. et al. (2011). "Classifier chains for multi-label classification." *Machine Learning*, 85(3), 333–359. https://doi.org/10.1007/s10994-011-5256-5
-  - Sun, L., & Erath, A. (2015). "A Bayesian network approach for population synthesis." *Transportation Research Part C*, 61, 49–62. https://doi.org/10.1016/j.trc.2015.10.010
   - Niculescu-Mizil, A., & Caruana, R. (2005). "Predicting good probabilities with supervised learning." *ICML '05*. https://doi.org/10.1145/1102351.1102430
   - He, H., & Garcia, E. A. (2009). "Learning from imbalanced data." *IEEE TKDE*, 21(9), 1263–1284. https://doi.org/10.1109/TKDE.2008.239
 - **Unified Feature Space**: Merges baseline `bandicoot_features.csv`, relational `graph_features.csv`, and `mobility_motifs.csv`.
@@ -127,37 +126,7 @@ Implements multi-target **Conditional Classifier Chains** along the demographic 
   - SMOTE balances training fold distributions.
   - Platt scaling (`CalibratedClassifierCV(method="sigmoid", cv="prefit")`) fit on un-resampled holdouts corrects distorted posteriors to true empirical priors.
 - **Collinearity Pruning**: `VarianceThreshold(threshold=1e-5)` removes zero-variance features before tree construction.
-- **Outputs**: Generates `output/results_summary.csv`, `output/classification_reports.txt`, and `output/synthetic_population_seed.csv`.
-
----
-
-### `ipu.py`
-
-Downstream population synthesis module implementing Iterative Proportional Updating (IPU) (Ye et al., 2009; Sun & Erath, 2015):
-
-- Ingests `output/synthetic_population_seed.csv`.
-- Aligns individual multi-attribute probability vectors against zonal marginal control totals (e.g. ward-level census distributions for age, gender, education, and income).
-- Iteratively adjusts agent weights to convergence.
-- Evaluates goodness of fit using Standardized Root Mean Square Error (SRMSE) and Total Absolute Difference (TAD).
-- Exports weighted expanded population seeds (`output/synthetic_population_final.csv`) and validation tables (`output/ipu_validation_metrics.csv`).
-
----
-
-### `matsim_plans.py`
-
-Synthesizes agent-based 24-hour activity-travel diaries and standard MATSim `plans.xml` for microscopic traffic simulation:
-
-- **Academic Grounding**:
-  - Bassolas, A. et al. (2019). "Mobile phone records to feed activity-based travel demand models: MATSim for studying a cordon toll policy in Barcelona." *Transportation Research Part A*, 121, 56–74. https://doi.org/10.1016/j.tra.2019.01.007
-  - Hörl, S., & Balać, M. (2021). "Synthetic population and travel demand for Paris and Île-de-France based on open and public data." *Transportation Research Part C*, 130, 103291. https://doi.org/10.1016/j.trc.2021.103291
-  - Axhausen, K. W., & Horni, A. (2016). *The Multi-Agent Transport Simulation MATSim*. Ubiquity Press. https://doi.org/10.5334/baw
-- **Activity Generation**:
-  - Merges expanded synthetic population with inferred spatial home/work anchors.
-  - Models temporal activity schedules (departure times, work/education durations, evening return) with individual stochasticity.
-  - Selects primary transportation mode (`car`, `pt`, `walk`) calibrated to predicted income bracket and vehicle access.
-- **Outputs**:
-  - `output/activity_travel_diaries.csv`: Relational table of scheduled activities per agent.
-  - `output/plans.xml`: Fully valid W3C standard XML conforming to the MATSim DTD specification (`http://www.matsim.org/files/dtd/plans_v4.dtd`).
+- **Outputs**: Generates `output/results_summary.csv`, `output/classification_reports.txt`, and `output/predictions.csv`.
 
 ---
 
