@@ -23,8 +23,12 @@ graph_features.py           → Relational network topology & neighbor feature a
                               (Eagle et al., 2010; Onnela et al., 2007; Dong et al., 2014)
 motifs.py                   → Daily human mobility motifs, entropy, & commute regularity
                               (Schneider et al., 2013; Jiang et al., 2016)
-train.py                    → 5-fold Stratified CV, SMOTE, CatBoost classifiers, and
-                              probability calibration across 7 socio-demographic targets
+spatial_context.py          → Zone-level residential and employment density context
+                              derived strictly from inferred anchors
+streetview_probe.py         → (Optional) In-memory Google Street View greenery (ExG)
+                              and edge density feature extraction
+train.py                    → 5-fold Stratified CV (random or grouped by inferred zone),
+                              SMOTE, CatBoost classifiers, and Platt probability calibration
 ```
 
 ---
@@ -66,12 +70,21 @@ python graph_features.py                          # -> output/graph_features.csv
 # 7. Extract daily mobility motifs & tour regularity
 python motifs.py                                  # -> output/mobility_motifs.csv
 
-# 8. Train models, evaluate feature ablations & export predictions
-python train.py                                   # -> output/predictions.csv,
-                                                   #    output/results_summary.csv,
-                                                   #    output/ablation_summary.csv,
-                                                   #    output/classification_reports.txt
+# 8. (Optional) Probe Google Street View indices for inferred home anchors
+python streetview_probe.py --dry_run --fetch      # -> output/streetview_features.csv
+
+# 9. Train models, evaluate feature ablations & export predictions
+python train.py                                   # Random 5-fold CV (default)
+python train.py --cv_scheme grouped               # Grouped CV by inferred home zone
+python train.py --quick                           # Single-seed verification
 ```
+
+### Spatial Context & Leakage Evaluation
+
+- **Spatial Context**: `spatial_context.py` extracts zone-level density and employment weights from inferred anchors, providing baseline comparison against spatial context features and negative controls (`baseline+zone_ctx_shuffled`).
+- **Grouped CV Scheme**: Run `python train.py --cv_scheme grouped` to partition folds strictly by nearest home zone, testing against spatial leakage.
+- **Positive Control**: Run `python generate_bengaluru_data.py --zone_income_coupling 1.0` to generate synthetic data where income depends on zone affluence, confirming detectability power.
+- Detailed experimental methodology: see [SPATIAL_CONTEXT_EXPERIMENT.md](docs/SPATIAL_CONTEXT_EXPERIMENT.md).
 
 Each stage automatically loads its corresponding input from `data/` and `output/`. The pipeline strictly preserves **anonymized subscriber IDs** across every module without assuming unmasked PII.
 
