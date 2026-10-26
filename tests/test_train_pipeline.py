@@ -94,3 +94,26 @@ def test_assemble_variant_features_shapes():
     df_shuf, dyn = tr.assemble_variant_features(base_df, None, "baseline+zone_ctx_shuffled", zone_ctx_df=ctx_df)
     assert not dyn
     assert "ctx_home_density_weight" in df_shuf.columns
+
+
+def test_default_train_path_reproduces_on_small_sample():
+    """
+    Runs the default train.py path (random StratifiedKFold, 5-fold CV, CatBoost + Platt calibration)
+    on a deterministic small sample and asserts that metrics match stored default results within tolerance.
+    """
+    base_df, _ = tr.load_dataset_features()
+    pop = pd.read_csv("data/population.csv")
+
+    sample_feat = base_df.iloc[:60].copy()
+    sample_pop = pop.iloc[:60].copy()
+
+    # Evaluate default train.py path
+    res = tr.evaluate_target_cv(sample_feat, sample_pop, target_col="gender", n_folds=5, random_state=42)
+
+    # Stored expected reference results for this sample
+    expected_cal_macro_f1 = 0.4352855
+    expected_cal_brier = 0.5899801
+
+    np.testing.assert_allclose(res["cal_macro_f1_mean"], expected_cal_macro_f1, atol=1e-4)
+    np.testing.assert_allclose(res["cal_brier_score"], expected_cal_brier, atol=1e-4)
+

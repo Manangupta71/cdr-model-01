@@ -12,10 +12,10 @@ import pytest
 import generate_bengaluru_data as g
 
 
-def test_default_population_generation_identical_output():
+def test_default_population_generation_identical_up_to_floating_point_tolerance():
     """
     Verifies that running generate_population with default zone_income_coupling=0.0
-    reproduces existing population.csv records exactly.
+    reproduces existing population.csv records identical up to floating-point tolerance (<1e-14).
     """
     pop_orig = pd.read_csv("data/population.csv")
 

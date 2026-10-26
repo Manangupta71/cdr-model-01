@@ -223,7 +223,7 @@ def generate_population(n_agents=None, zone_income_coupling=0.0):
     zone_income_coupling : float, default 0.0
         Strength of coupling between home zone affluence and income bracket
         (beta >= 0). Default 0.0 keeps home zone completely independent of
-        all demographics, reproducing byte-identical default outputs.
+        all demographics, reproducing default outputs identical up to floating-point tolerance (<1e-14).
         When > 0.0, serves as a synthetic positive control to test whether
         spatial context features can detect genuine area-income relationships.
         This is an artificial positive control, NOT an empirical claim about
