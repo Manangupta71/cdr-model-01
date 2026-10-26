@@ -161,7 +161,24 @@ def _work_status_from_occupation(occupation, age_group):
     return "employed"
 
 
-def _sample_income(occupation, education):
+AFFLUENCE_SEED = 7  # Arbitrary, fixed: zone "affluence" values are a synthetic positive control, NOT real-world claims.
+
+
+def zone_affluence(zones=ZONES):
+    """
+    Arbitrary per-zone affluence score in [-1, 1].
+    Synthetic positive control only; not an empirical claim about real neighbourhoods.
+    """
+    r = np.random.default_rng(AFFLUENCE_SEED)
+    return {z.name: float(v) for z, v in zip(zones, r.uniform(-1, 1, len(zones)))}
+
+
+def _sample_income(occupation, education, affluence=0.0, beta=0.0):
+    """
+    Samples income bracket given occupation and education.
+    When beta > 0, tilts probabilities by zone affluence as a synthetic
+    positive control (not a claim about real-world neighbourhoods).
+    """
     base = {
         "informal_labor": [0.50, 0.38, 0.10, 0.02],
         "retail_service": [0.25, 0.45, 0.24, 0.06],
@@ -173,6 +190,9 @@ def _sample_income(occupation, education):
     p = np.array(base, dtype=float)
     if education in ("graduate", "postgraduate"):
         p = p * np.array([0.6, 0.9, 1.15, 1.5])
+    if beta > 0.0 and affluence != 0.0:
+        mult_axis = np.array([-1.5, -0.5, 0.5, 1.5])
+        p = p * np.exp(beta * affluence * mult_axis)
     p /= p.sum()
     return rng.choice(INCOME_BRACKETS, p=p)
 
@@ -192,9 +212,27 @@ def _normalized(weights):
     return w / w.sum()
 
 
-def generate_population(n_agents=None):
+def generate_population(n_agents=None, zone_income_coupling=0.0):
+    """
+    Generates synthetic population with joint demographic attributes.
+
+    Parameters
+    ----------
+    n_agents : int, optional
+        Number of agents to generate (default: N_AGENTS = 500).
+    zone_income_coupling : float, default 0.0
+        Strength of coupling between home zone affluence and income bracket
+        (beta >= 0). Default 0.0 keeps home zone completely independent of
+        all demographics, reproducing byte-identical default outputs.
+        When > 0.0, serves as a synthetic positive control to test whether
+        spatial context features can detect genuine area-income relationships.
+        This is an artificial positive control, NOT an empirical claim about
+        real Bengaluru neighbourhoods.
+    """
     if n_agents is None:
         n_agents = N_AGENTS
+    aff_map = zone_affluence() if zone_income_coupling > 0.0 else None
+
     records = []
     for agent_id in range(n_agents):
         age_group = _sample_age_group()
@@ -202,10 +240,17 @@ def generate_population(n_agents=None):
         education = _sample_education(age_group)
         occupation = _sample_occupation(age_group, education)
         work_status = _work_status_from_occupation(occupation, age_group)
-        income_bracket = _sample_income(occupation, education)
-        socio_class = _sample_socioeconomic_class(income_bracket, education)
 
-        home_zone = rng.choice(ZONES, p=_normalized([z.density_weight for z in ZONES]))
+        if zone_income_coupling == 0.0:
+            income_bracket = _sample_income(occupation, education)
+            socio_class = _sample_socioeconomic_class(income_bracket, education)
+            home_zone = rng.choice(ZONES, p=_normalized([z.density_weight for z in ZONES]))
+        else:
+            home_zone = rng.choice(ZONES, p=_normalized([z.density_weight for z in ZONES]))
+            aff = aff_map[home_zone.name]
+            income_bracket = _sample_income(occupation, education, affluence=aff, beta=zone_income_coupling)
+            socio_class = _sample_socioeconomic_class(income_bracket, education)
+
         if work_status == "employed":
             work_zone = rng.choice(ZONES, p=_normalized([z.employment_weight for z in ZONES]))
         else:
@@ -381,18 +426,22 @@ def generate_recharge_events(population_df, sim_days=None):
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main(n_agents=None, sim_days=None, out_dir="data"):
+def main(n_agents=None, sim_days=None, out_dir="data", zone_income_coupling=0.0):
     import os
     import argparse
     parser = argparse.ArgumentParser(description="Synthetic CDR data generator for urban population simulation.")
     parser.add_argument("--n_agents", type=int, default=N_AGENTS, help="Number of synthetic agents (default: 500)")
     parser.add_argument("--sim_days", type=int, default=SIM_DAYS, help="Number of simulation days (default: 14)")
     parser.add_argument("--out_dir", type=str, default=out_dir, help="Output directory for CSV files (default: data)")
+    parser.add_argument("--zone_income_coupling", type=float, default=0.0,
+                        help="Coupling strength beta (default: 0.0 = off). Synthetic positive control where "
+                             "income depends on home-zone affluence. Not an empirical claim about real neighbourhoods.")
     args, _ = parser.parse_known_args()
 
     n_agents = n_agents if n_agents is not None else args.n_agents
     sim_days = sim_days if sim_days is not None else args.sim_days
     out_dir = out_dir if out_dir != "data" else args.out_dir
+    zone_income_coupling = zone_income_coupling if zone_income_coupling != 0.0 else args.zone_income_coupling
 
     os.makedirs(out_dir, exist_ok=True)
 
@@ -400,8 +449,8 @@ def main(n_agents=None, sim_days=None, out_dir="data"):
     antennas = generate_antenna_layout()
     antennas.to_csv(f"{out_dir}/antennas.csv", index=False)
 
-    print(f"Generating population (n={n_agents})...")
-    population = generate_population(n_agents=n_agents)
+    print(f"Generating population (n={n_agents}, zone_income_coupling={zone_income_coupling})...")
+    population = generate_population(n_agents=n_agents, zone_income_coupling=zone_income_coupling)
     population.to_csv(f"{out_dir}/population.csv", index=False)
 
     print(f"Generating mobility traces ({sim_days} days)...")
