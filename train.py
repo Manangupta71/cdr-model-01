@@ -2,9 +2,10 @@
 train.py
 
 Trains and evaluates CatBoost classifiers for seven socio-demographic targets
-using behavioral indicators and graph-derived relational features. Evaluates
-systematic feature ablations across multiple seeds to test whether graph features
-improve prediction over baseline tabular bandicoot indicators.
+using behavioral indicators, graph-derived relational features, and spatial context.
+Evaluates systematic feature ablations across multiple seeds to test whether
+graph features or spatial context features improve prediction over baseline
+tabular bandicoot indicators.
 
 Targets:
   age_group, gender, education_level, occupation_category, work_status,
@@ -16,9 +17,12 @@ Ablation Variants:
   3. baseline+colocation: Baseline + Co-location Graph
   4. baseline+social: Baseline + Social Interaction Graph
   5. baseline+all_graphs: Baseline + All Three User Graphs
+  6. baseline+zone_ctx: Baseline + Zone Spatial Context
+  7. baseline+zone_ctx_shuffled: Baseline + Shuffled Zone Context (Negative Control)
+  [Optional: baseline+streetview, baseline+streetview_shuffled if streetview_features.csv exists]
 
 Leakage Prevention Protocol:
-  - 5-fold stratified cross-validation per target.
+  - 5-fold stratified cross-validation per target (random or grouped by inferred home zone).
   - SMOTE oversampling applied per fold, fit exclusively on the training split.
   - Mobility k-NN graph is fitted dynamically within each CV fold on the training split.
   - Platt probability calibration fit on un-resampled training holdouts.
@@ -30,7 +34,7 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, StratifiedGroupKFold
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import f1_score, classification_report
 from sklearn.calibration import CalibratedClassifierCV
@@ -39,6 +43,12 @@ from imblearn.over_sampling import SMOTE
 from catboost import CatBoostClassifier
 
 from graph_features import MobilityKNNGraphBuilder
+from spatial_context import (
+    build_zone_context,
+    get_home_zone_groups,
+    load_streetview_features,
+    make_shuffled_control,
+)
 
 TARGETS = [
     "age_group",
@@ -151,9 +161,11 @@ def _get_chain_features(features_df, prior_preds, target_col):
 
 
 def evaluate_target_cv(features_df, population_df, target_col, prior_preds=None,
-                       n_folds=5, random_state=42, use_dynamic_knn=False):
+                       n_folds=5, random_state=42, use_dynamic_knn=False,
+                       cv_scheme="random", groups=None):
     """
-    Evaluates 5-fold stratified cross-validation for a given target.
+    Evaluates 5-fold cross-validation for a given target.
+    Supports random StratifiedKFold or grouped StratifiedGroupKFold on inferred home zone.
     Returns metrics both with and without Platt calibration, plus OOF predictions.
     """
     prior_preds = prior_preds or {}
@@ -164,7 +176,15 @@ def evaluate_target_cv(features_df, population_df, target_col, prior_preds=None,
     y = le.fit_transform(df[target_col].to_numpy())
     n_classes = len(le.classes_)
 
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+    if cv_scheme == "grouped":
+        if groups is None:
+            raise ValueError("groups mapping must be provided when cv_scheme='grouped'")
+        grp_labels = df["phone_number"].map(groups).to_numpy()
+        sgkf = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        splits = list(sgkf.split(df, y, grp_labels))
+    else:
+        skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+        splits = list(skf.split(df, y))
 
     oof_proba_uncal = np.zeros((len(df), n_classes))
     oof_proba_cal = np.zeros((len(df), n_classes))
@@ -172,7 +192,7 @@ def evaluate_target_cv(features_df, population_df, target_col, prior_preds=None,
     macro_f1_uncal, macro_f1_cal = [], []
     weighted_f1_uncal, weighted_f1_cal = [], []
 
-    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(df, y)):
+    for fold_idx, (train_idx, test_idx) in enumerate(splits):
         train_df = df.iloc[train_idx].copy()
         test_df = df.iloc[test_idx].copy()
 
@@ -198,17 +218,23 @@ def evaluate_target_cv(features_df, population_df, target_col, prior_preds=None,
 
         base_model, calibrator = _fit_catboost_models(X_train, y_train, n_classes, random_state=random_state)
 
-        # Uncalibrated evaluation
+        # Uncalibrated evaluation (map via classes_ if classes are missing in training fold)
         p_uncal = base_model.predict_proba(X_test)
-        oof_proba_uncal[test_idx] = p_uncal
-        pred_uncal = np.argmax(p_uncal, axis=1)
+        classes_uncal = np.asarray(getattr(base_model, "classes_", np.arange(p_uncal.shape[1])), dtype=int)
+        full_p_uncal = np.zeros((len(test_idx), n_classes))
+        full_p_uncal[:, classes_uncal] = p_uncal
+        oof_proba_uncal[test_idx] = full_p_uncal
+        pred_uncal = np.argmax(full_p_uncal, axis=1)
         macro_f1_uncal.append(f1_score(y_test, pred_uncal, average="macro", zero_division=0))
         weighted_f1_uncal.append(f1_score(y_test, pred_uncal, average="weighted", zero_division=0))
 
-        # Calibrated evaluation
+        # Calibrated evaluation (map via classes_ if classes are missing in training fold)
         p_cal = calibrator.predict_proba(X_test)
-        oof_proba_cal[test_idx] = p_cal
-        pred_cal = np.argmax(p_cal, axis=1)
+        classes_cal = np.asarray(getattr(calibrator, "classes_", np.arange(p_cal.shape[1])), dtype=int)
+        full_p_cal = np.zeros((len(test_idx), n_classes))
+        full_p_cal[:, classes_cal] = p_cal
+        oof_proba_cal[test_idx] = full_p_cal
+        pred_cal = np.argmax(full_p_cal, axis=1)
         macro_f1_cal.append(f1_score(y_test, pred_cal, average="macro", zero_division=0))
         weighted_f1_cal.append(f1_score(y_test, pred_cal, average="weighted", zero_division=0))
 
@@ -300,34 +326,53 @@ def load_dataset_features(bandicoot_path="output/bandicoot_features.csv",
     return base_df, graph_df
 
 
-def assemble_variant_features(base_df, graph_df, variant_name):
+def assemble_variant_features(base_df, graph_df, variant_name,
+                              zone_ctx_df=None, streetview_df=None,
+                              seed=42):
     """
     Assembles feature dataframe corresponding to the ablation variant.
     """
-    if variant_name == "baseline" or graph_df is None:
+    if variant_name == "baseline":
         return base_df.copy(), False
 
     df = base_df.copy()
     use_dynamic_knn = False
 
     if variant_name == "baseline+social":
-        social_cols = ["phone_number"] + [c for c in graph_df.columns if c.startswith("graph_social__")]
-        df = df.merge(graph_df[social_cols], on="phone_number", how="left")
+        if graph_df is not None:
+            social_cols = ["phone_number"] + [c for c in graph_df.columns if c.startswith("graph_social__")]
+            df = df.merge(graph_df[social_cols], on="phone_number", how="left")
     elif variant_name == "baseline+colocation":
-        colo_cols = ["phone_number"] + [c for c in graph_df.columns if c.startswith("graph_colocation__")]
-        df = df.merge(graph_df[colo_cols], on="phone_number", how="left")
+        if graph_df is not None:
+            colo_cols = ["phone_number"] + [c for c in graph_df.columns if c.startswith("graph_colocation__")]
+            df = df.merge(graph_df[colo_cols], on="phone_number", how="left")
     elif variant_name == "baseline+mobility":
         # Use dynamic fold-isolated k-NN
         use_dynamic_knn = True
     elif variant_name == "baseline+all_graphs":
-        social_and_colo = ["phone_number"] + [c for c in graph_df.columns if c.startswith("graph_social__") or c.startswith("graph_colocation__")]
-        df = df.merge(graph_df[social_and_colo], on="phone_number", how="left")
+        if graph_df is not None:
+            social_and_colo = ["phone_number"] + [c for c in graph_df.columns if c.startswith("graph_social__") or c.startswith("graph_colocation__")]
+            df = df.merge(graph_df[social_and_colo], on="phone_number", how="left")
         use_dynamic_knn = True
+    elif variant_name == "baseline+zone_ctx":
+        if zone_ctx_df is not None:
+            df = df.merge(zone_ctx_df, on="phone_number", how="left")
+    elif variant_name == "baseline+zone_ctx_shuffled":
+        if zone_ctx_df is not None:
+            shuf = make_shuffled_control(zone_ctx_df, random_state=seed)
+            df = df.merge(shuf, on="phone_number", how="left")
+    elif variant_name == "baseline+streetview":
+        if streetview_df is not None:
+            df = df.merge(streetview_df, on="phone_number", how="left")
+    elif variant_name == "baseline+streetview_shuffled":
+        if streetview_df is not None:
+            shuf = make_shuffled_control(streetview_df, random_state=seed)
+            df = df.merge(shuf, on="phone_number", how="left")
 
     return df, use_dynamic_knn
 
 
-def run_experiments(seeds=(42, 123, 999), n_folds=5, run_ablation=True):
+def run_experiments(seeds=(42, 123, 999), n_folds=5, run_ablation=True, cv_scheme="random"):
     """
     Executes cross-validation over the ablation suite across multiple seeds,
     records fold-level std and seed spread, and exports predictions.
@@ -335,16 +380,33 @@ def run_experiments(seeds=(42, 123, 999), n_folds=5, run_ablation=True):
     base_df, graph_df = load_dataset_features()
     population = pd.read_csv("data/population.csv")
 
-    variants = [
-        "baseline",
-        "baseline+mobility",
-        "baseline+colocation",
-        "baseline+social",
-        "baseline+all_graphs",
-    ] if run_ablation else ["baseline", "baseline+all_graphs"]
+    try:
+        zone_ctx_df = build_zone_context()
+        home_zone_groups = get_home_zone_groups()
+    except Exception:
+        zone_ctx_df = None
+        home_zone_groups = None
+
+    streetview_df = load_streetview_features()
+
+    if run_ablation:
+        variants = [
+            "baseline",
+            "baseline+mobility",
+            "baseline+colocation",
+            "baseline+social",
+            "baseline+all_graphs",
+            "baseline+zone_ctx",
+            "baseline+zone_ctx_shuffled",
+        ]
+        if streetview_df is not None:
+            variants.extend(["baseline+streetview", "baseline+streetview_shuffled"])
+    else:
+        variants = ["baseline", "baseline+all_graphs"]
 
     print("=" * 75)
     print(f"Running Socio-Demographic Prediction Pipeline Across {len(seeds)} Random Seeds: {seeds}")
+    print(f"CV Scheme: {cv_scheme.upper()} (Splits: {n_folds})")
     print(f"Ablation Variants ({len(variants)}): {variants}")
     print("=" * 75)
 
@@ -353,10 +415,14 @@ def run_experiments(seeds=(42, 123, 999), n_folds=5, run_ablation=True):
 
     for var in variants:
         print(f"\n>>> Evaluating Variant: {var} <<<")
-        feat_df, use_dyn_knn = assemble_variant_features(base_df, graph_df, var)
-
         for seed in seeds:
             print(f"--- [Seed {seed}] ---")
+            feat_df, use_dyn_knn = assemble_variant_features(
+                base_df, graph_df, var,
+                zone_ctx_df=zone_ctx_df,
+                streetview_df=streetview_df,
+                seed=seed,
+            )
             prior_oof = {}
             for target in TARGETS:
                 res = evaluate_target_cv(
@@ -365,6 +431,8 @@ def run_experiments(seeds=(42, 123, 999), n_folds=5, run_ablation=True):
                     n_folds=n_folds,
                     random_state=seed,
                     use_dynamic_knn=use_dyn_knn,
+                    cv_scheme=cv_scheme,
+                    groups=home_zone_groups,
                 )
                 prior_oof[target] = res["oof_df"]
 
@@ -451,7 +519,12 @@ def run_experiments(seeds=(42, 123, 999), n_folds=5, run_ablation=True):
 
     # 4. Generate Final Production Predictions (predictions.csv)
     print("\nFitting final production models on full unified dataset...")
-    full_feat_df, use_dyn_knn = assemble_variant_features(base_df, graph_df, "baseline+all_graphs")
+    full_feat_df, use_dyn_knn = assemble_variant_features(
+        base_df, graph_df, "baseline+all_graphs",
+        zone_ctx_df=zone_ctx_df,
+        streetview_df=streetview_df,
+        seed=seeds[0],
+    )
     prior_final_preds = {}
     merged_preds = pd.DataFrame({"phone_number": full_feat_df["phone_number"].to_numpy()})
 
@@ -483,10 +556,13 @@ def main():
                         help="Random seeds for CV stability verification.")
     parser.add_argument("--n_folds", type=int, default=5, help="Number of CV folds.")
     parser.add_argument("--quick", action="store_true", help="Run quick single-seed check.")
+    parser.add_argument("--cv_scheme", choices=["random", "grouped"], default="random",
+                        help="Cross-validation scheme: 'random' (StratifiedKFold) or "
+                             "'grouped' (StratifiedGroupKFold on nearest inferred home zone).")
     args = parser.parse_args()
 
     seeds = [42] if args.quick else args.seeds
-    run_experiments(seeds=seeds, n_folds=args.n_folds, run_ablation=True)
+    run_experiments(seeds=seeds, n_folds=args.n_folds, run_ablation=True, cv_scheme=args.cv_scheme)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ This audit details the data generation mechanics and distinguishes empirically c
 | **work_status derived from occupation** | **SIMULATION COUPLING** | Rule-based mapping from occupation category with retirement condition for age 60+. Tracked separately in evaluation. |
 | Income bracket conditioned on occupation + education | GROUNDED (direction) / PLAUSIBLE (magnitude) | Conditional distribution linking income level to occupational category and educational attainment. |
 | `socio_demographic_class` (NCCS-style band) | GROUNDED (methodology) | Derived from household income bracket and education level following the New Consumer Classification System (NCCS) framework. |
-| Home/work zone assignment | PLAUSIBLE | Spatial allocation weighted by residential density and employment density per urban zone (e.g., Whitefield, Electronic City, Koramangala). |
+| Home/work zone assignment | PLAUSIBLE | Spatial allocation weighted by residential density and employment density per urban zone (e.g., Whitefield, Electronic City, Koramangala). In default configuration, home_zone is sampled independently of all demographic attributes. |
 | Zone coordinates | GROUNDED (centroids) | Centroids representing major Bengaluru localities, geocoded within city bounds. |
 | Antenna (cell tower) layout | PLAUSIBLE | Spatial tower distribution weighted by local activity density, reflecting urban cellular deployment density. |
 | Daily mobility schedule | PLAUSIBLE | Diurnal home–work–home commute and daytime activity schedule with stochastic deviation. |
@@ -32,6 +32,7 @@ This audit details the data generation mechanics and distinguishes empirically c
 
 ## Evaluation Implications
 
+- **`home_zone` Independence & Spatial Context**: In the default generator, `home_zone` is sampled from residential density weights alone, strictly independent of demographic attributes by construction. Consequently, location-context features provide zero genuine predictive gain on default data (expected null result). An optional `--zone_income_coupling BETA` flag provides a synthetic positive control to verify detector power and spatial cross-validation behavior.
 - **`work_status`**: Performance reflects the conditional rule applied during synthetic generation; evaluated and reported with this context noted.
 - **Demographic Targets (`age_group`, `gender`, `education_level`, `occupation_category`, `income_bracket`, `socio_demographic_class`)**: Governed by multi-dimensional probabilistic sampling with stochastic noise, providing a realistic test of feature extraction and classification efficacy.
 
